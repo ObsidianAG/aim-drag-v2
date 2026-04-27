@@ -1,0 +1,65 @@
+--- upload/release-governance.test.ts	2026-04-27 15:28:49.139000402 -0400
++++ aim-drag-v2/tests/release-governance.test.ts	2026-04-27 16:03:13.435454334 -0400
+@@ -187,7 +187,7 @@
+       sm.transitionToAlpha('rm-alice', ctx);
+ 
+       expect(() => sm.transitionToBeta('rm-alice', badGate, ctx)).toThrow(
+-        'BETA_GATE_FAILED: Feature freeze not acknowledged'
++        /^BETA_GATE_FAILED: Feature freeze not acknowledged$/
+       );
+     });
+ 
+@@ -200,7 +200,7 @@
+       sm.transitionToBeta('rm-alice', makeBetaGate(), ctx);
+ 
+       expect(() => sm.transitionToRC('rm-alice', badGate, ctx)).toThrow(
+-        'RC_GATE_FAILED: Peer review not complete'
++        /^RC_GATE_FAILED: Peer review not complete$/
+       );
+     });
+ 
+@@ -214,7 +214,7 @@
+       sm.transitionToRC('rm-alice', makeRCGate(), ctx);
+ 
+       expect(() => sm.transitionToFinal('rm-alice', badGate, ctx)).toThrow(
+-        'FINAL_GATE_FAILED: SHA-256 not verified (AIM DRAG policy)'
++        /^FINAL_GATE_FAILED: SHA-256 not verified \(AIM DRAG policy\)$/
+       );
+     });
+ 
+@@ -228,7 +228,7 @@
+       sm.transitionToRC('rm-alice', makeRCGate(), ctx);
+ 
+       expect(() => sm.transitionToFinal('rm-alice', badGate, ctx)).toThrow(
+-        'FINAL_GATE_FAILED: QNEO evidence not complete (AIM DRAG policy)'
++        /^FINAL_GATE_FAILED: QNEO evidence not complete \(AIM DRAG policy\)$/
+       );
+     });
+   });
+@@ -239,7 +239,7 @@
+       const badCtx = { ...makeSecurityContext(), actorMfaVerified: false };
+ 
+       expect(() => sm.transitionToAlpha('rm-alice', badCtx)).toThrow(
+-        'AUTHORITY_DENIED: MFA not verified'
++        /^AUTHORITY_DENIED: MFA not verified$/
+       );
+     });
+ 
+@@ -251,7 +251,7 @@
+       };
+ 
+       expect(() => sm.transitionToAlpha('rm-alice', badCtx)).toThrow(
+-        'AUTHORITY_DENIED: Branch protection not enabled'
++        /^AUTHORITY_DENIED: Branch protection not enabled$/
+       );
+     });
+ 
+@@ -271,7 +271,7 @@
+ 
+       // Any transition should fail
+       expect(() => sm.transitionToAlpha('rm-alice', ctx)).toThrow(
+-        'AUTHORITY_DENIED: Release is frozen (EOL)'
++        /^AUTHORITY_DENIED: Release is frozen \(EOL\)$/
+       );
+     });
+   });

@@ -1,0 +1,25 @@
+--- upload/tsconfig.json	2026-04-27 15:28:49.199000713 -0400
++++ aim-drag-v2/tsconfig.json	2026-04-27 16:02:43.515361408 -0400
+@@ -1,18 +1,10 @@
+ {
++  "extends": "./tsconfig.base.json",
+   "compilerOptions": {
+-    "target": "ES2022",
+-    "module": "ES2022",
++    "module": "ESNext",
+     "moduleResolution": "bundler",
+-    "strict": true,
+-    "esModuleInterop": true,
+-    "skipLibCheck": true,
+-    "forceConsistentCasingInFileNames": true,
+-    "outDir": "./dist",
+-    "rootDir": ".",
+-    "declaration": true,
+-    "declarationMap": true,
+-    "sourceMap": true,
+-    "types": ["node"]
++    "noEmit": true,
++    "types": ["node", "vitest/globals"]
+   },
+   "include": ["lib/**/*.ts", "tests/**/*.ts"],
+   "exclude": ["node_modules", "dist"]

@@ -1,23 +1,41 @@
 {
-  "name": "release-governance",
+  "name": "text2video-rank",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "AIM DRAG text2video ranking — Expo Router web + custom Node server",
   "type": "module",
   "scripts": {
-    "typecheck": "tsc -p tsconfig.build.json --noEmit",
-    "typecheck:test": "tsc -p tsconfig.test.json",
-    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit && tsc -p tsconfig.server.json --noEmit",
+    "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
+    "build:web": "tsc -p tsconfig.build.json",
+    "build:server": "node scripts/build-server.mjs",
+    "build": "pnpm build:web && pnpm build:server",
+    "start": "cross-env NODE_ENV=production node dist-server/index.js",
+    "dev": "cross-env NODE_ENV=development node --watch server/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "ci": "pnpm install --frozen-lockfile && pnpm typecheck && pnpm typecheck:test && pnpm test"
+    "ast:gate": "node scripts/ast-gate.mjs",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "node scripts/guard-db-env.mjs && drizzle-kit migrate",
+    "ci": "pnpm install --frozen-lockfile && pnpm typecheck && pnpm typecheck:test && pnpm test && pnpm ast:gate && pnpm build",
+    "proof:secrets": "node scripts/audit-secrets.mjs",
+    "proof:providers": "node scripts/audit-providers.mjs",
+    "proof:claims": "node scripts/audit-claims.mjs"
   },
-  "keywords": [],
+  "keywords": [
+    "aim-drag",
+    "text2video",
+    "expo-router"
+  ],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.33.2",
+  "dependencies": {
+    "cross-env": "^7.0.3",
+    "zod": "^4.3.6"
+  },
   "devDependencies": {
     "@types/node": "^25.6.0",
+    "esbuild": "^0.25.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.5"
   }

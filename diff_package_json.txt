@@ -1,0 +1,16 @@
+--- upload/package.json	2026-04-27 15:28:49.227000858 -0400
++++ aim-drag-v2/package.json	2026-04-27 16:02:50.795384007 -0400
+@@ -5,8 +5,12 @@
+   "main": "index.js",
+   "type": "module",
+   "scripts": {
++    "typecheck": "tsc -p tsconfig.build.json --noEmit",
++    "typecheck:test": "tsc -p tsconfig.test.json",
++    "build": "tsc -p tsconfig.build.json",
+     "test": "vitest run",
+-    "test:watch": "vitest"
++    "test:watch": "vitest",
++    "ci": "pnpm install --frozen-lockfile && pnpm typecheck && pnpm typecheck:test && pnpm test"
+   },
+   "keywords": [],
+   "author": "",
