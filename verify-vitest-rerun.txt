@@ -1,0 +1,29 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.5 [39m[90m/home/ubuntu/aim-drag-v2[39m
+
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseStateMachine[2m > [22mPython-Accurate Lifecycle Transitions[2m > [22minitializes in FEATURE phase with PRE_ALPHA stage[32m 2[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseStateMachine[2m > [22mPython-Accurate Lifecycle Transitions[2m > [22mtransitions to ALPHA while staying in FEATURE phase[32m 2[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseStateMachine[2m > [22mPython-Accurate Lifecycle Transitions[2m > [22mtransitions to BETA and enters PRERELEASE phase (feature freeze)[32m 1[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseStateMachine[2m > [22mPython-Accurate Lifecycle Transitions[2m > [22mtransitions to RC while STAYING in PRERELEASE phase[32m 1[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseStateMachine[2m > [22mPython-Accurate Lifecycle Transitions[2m > [22mtransitions to FINAL and enters BUGFIX phase (not security)[32m 1[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseStateMachine[2m > [22mPython-Accurate Lifecycle Transitions[2m > [22mtransitions from BUGFIX to SECURITY when bugfix window closes[32m 0[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseStateMachine[2m > [22mPython-Accurate Lifecycle Transitions[2m > [22mtransitions from SECURITY to EOL and freezes branch[32m 1[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseStateMachine[2m > [22mGate Enforcement[2m > [22mrejects beta transition without feature freeze acknowledgment[32m 1[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseStateMachine[2m > [22mGate Enforcement[2m > [22mrejects RC transition without peer review[32m 1[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseStateMachine[2m > [22mGate Enforcement[2m > [22mrejects final transition without SHA-256 verification (AIM DRAG)[32m 1[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseStateMachine[2m > [22mGate Enforcement[2m > [22mrejects final transition without QNEO evidence (AIM DRAG)[32m 1[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseStateMachine[2m > [22mAuthority Model[2m > [22mrejects transition without MFA[32m 0[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseStateMachine[2m > [22mAuthority Model[2m > [22mrejects transition without branch protection[32m 0[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseStateMachine[2m > [22mAuthority Model[2m > [22mrejects all transitions after EOL (frozen)[32m 1[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseStateMachine[2m > [22mEvidence Chain[2m > [22mgenerates SHA-256 evidence hash for each transition[32m 1[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseAuthorityManager[2m > [22mgrants admin to release managers with MFA on active branches[32m 0[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseAuthorityManager[2m > [22mdenies admin to non-release-managers[32m 0[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseAuthorityManager[2m > [22mdenies admin without MFA[32m 0[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseAuthorityManager[2m > [22mrevokes all admin privileges on EOL transition[32m 1[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts[2m > [22mReleaseAuthorityManager[2m > [22mdoes not grant admin when registering after EOL[32m 0[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m20 passed[39m[22m[90m (20)[39m
+[2m   Start at [22m 16:19:14
+[2m   Duration [22m 306ms[2m (transform 91ms, setup 0ms, import 123ms, tests 16ms, environment 0ms)[22m
+

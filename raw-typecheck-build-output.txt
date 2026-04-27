@@ -1,0 +1,8 @@
+=== tsc -p tsconfig.build.json --noEmit ===
+Exit code: 0
+
+=== tsc -p tsconfig.test.json --noEmit ===
+Exit code: 0
+
+=== tsc -p tsconfig.build.json (emit) ===
+Exit code: 0

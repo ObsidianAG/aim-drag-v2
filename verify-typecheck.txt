@@ -1,0 +1,4 @@
+
+> release-governance@1.0.0 typecheck /home/ubuntu/aim-drag-v2
+> tsc -p tsconfig.build.json --noEmit
+

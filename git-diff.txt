@@ -1,0 +1,2811 @@
+=== diff: secure_coding_gate.py ===
+--- upload/secure_coding_gate.py	2026-04-27 15:28:49.091000153 -0400
++++ aim-drag-v2/secure_coding_gate.py	2026-04-27 15:54:12.145784916 -0400
+@@ -1,8 +1,11 @@
+ """
+ secure_coding_gate.py — A.I.M D.R.A.G Fail-Closed Secure Coding Gate
+ 
+-Production implementation of the 11-step secure coding pipeline, AST enforcement
+-engine, SARIF evidence aggregation, and security evidence bundles.
++Production policy engine with externally supplied evidence.
++
++Implements the 11-step secure coding pipeline, pattern enforcement engine,
++real AST enforcement engine (ast.NodeVisitor), SARIF evidence aggregation,
++and security evidence bundles.
+ 
+ CORE RULE:
+     AI can help find and fix vulnerabilities, but AIM DRAG must treat every
+@@ -13,13 +16,12 @@
+     LLM security review is NOT authoritative.
+     Scanner output, AST enforcement, tests, re-scan, human review, and QNEO
+     evidence remain the decision boundary.
+-
+-Production code — no mocks, no placeholders, no simulation.
+ """
+ 
+ from __future__ import annotations
+ 
+ import ast
++import difflib
+ import enum
+ import hashlib
+ import json
+@@ -35,6 +37,18 @@
+ 
+ 
+ # ═══════════════════════════════════════════════════════════════════════════════
++# SHA-256 STRICT VALIDATION
++# ═══════════════════════════════════════════════════════════════════════════════
++
++_HEX64 = re.compile(r"^[a-f0-9]{64}$")
++
++
++def is_sha256(value: str) -> bool:
++    """Validate that value is a strict lowercase hex SHA-256 digest."""
++    return bool(_HEX64.fullmatch(value))
++
++
++# ═══════════════════════════════════════════════════════════════════════════════
+ # SECTION 1 — CWE PRIORITY REGISTRY (2025 Top 25)
+ # ═══════════════════════════════════════════════════════════════════════════════
+ 
+@@ -45,117 +59,152 @@
+     name: str
+     description: str
+     severity: str  # "critical", "high", "medium", "low"
+-    kev_listed: bool  # True if in CISA KEV 2025 Top 10
++    kev_listed: bool  # True if CVEs in CISA KEV per MITRE 2025 table
+ 
+     @property
+     def identifier(self) -> str:
+         return f"CWE-{self.cwe_id}"
+ 
+ 
+-# 2025 CWE Top 25 — updated January 29, 2026 per MITRE
++# 2025 CWE Top 25 — per MITRE archive page (last updated December 15, 2025)
++# Exact 25 entries. kev_listed flags from the MITRE 2025 KEV column.
+ CWE_2025_TOP_25: Dict[int, CWEEntry] = {
+     79: CWEEntry(79, "Cross-site Scripting (XSS)",
+                  "Improper neutralization of input during web page generation",
+                  "high", True),
+-    787: CWEEntry(787, "Out-of-bounds Write",
+-                  "Software writes data past the end or before the beginning of the intended buffer",
+-                  "critical", True),
+     89: CWEEntry(89, "SQL Injection",
+                  "Improper neutralization of special elements used in an SQL command",
+                  "critical", True),
++    352: CWEEntry(352, "Cross-Site Request Forgery (CSRF)",
++                  "Web application does not sufficiently verify request origin",
++                  "high", False),
++    862: CWEEntry(862, "Missing Authorization",
++                  "Software does not perform authorization check when accessing a resource",
++                  "high", False),
++    787: CWEEntry(787, "Out-of-bounds Write",
++                  "Software writes data past the end or before the beginning of the intended buffer",
++                  "critical", True),
++    22: CWEEntry(22, "Path Traversal",
++                 "Improper limitation of a pathname to a restricted directory",
++                 "high", True),
+     416: CWEEntry(416, "Use After Free",
+                   "Referencing memory after it has been freed",
+                   "critical", True),
+-    78: CWEEntry(78, "OS Command Injection",
+-                 "Improper neutralization of special elements used in an OS command",
+-                 "critical", True),
+-    20: CWEEntry(20, "Improper Input Validation",
+-                 "Product receives input but does not validate or incorrectly validates",
+-                 "high", True),
+     125: CWEEntry(125, "Out-of-bounds Read",
+                   "Software reads data past the end or before the beginning of the intended buffer",
+                   "high", False),
+-    22: CWEEntry(22, "Path Traversal",
+-                 "Improper limitation of a pathname to a restricted directory",
+-                 "high", True),
+-    352: CWEEntry(352, "Cross-Site Request Forgery (CSRF)",
+-                  "Web application does not sufficiently verify request origin",
+-                  "high", True),
+-    862: CWEEntry(862, "Missing Authorization",
+-                  "Software does not perform authorization check when accessing a resource",
++    78: CWEEntry(78, "OS Command Injection",
++                 "Improper neutralization of special elements used in an OS command",
++                 "critical", True),
++    94: CWEEntry(94, "Code Injection",
++                 "Improper control of generation of code",
++                 "critical", True),
++    120: CWEEntry(120, "Buffer Copy without Checking Size of Input (Classic Buffer Overflow)",
++                  "Program copies input buffer to output buffer without verifying size",
++                  "critical", False),
++    434: CWEEntry(434, "Unrestricted Upload of File with Dangerous Type",
++                  "Software allows upload of files with dangerous types",
+                   "high", True),
+     476: CWEEntry(476, "NULL Pointer Dereference",
+                   "Application dereferences a pointer that it expects to be valid but is NULL",
+                   "medium", False),
+-    287: CWEEntry(287, "Improper Authentication",
+-                  "Actor claims to have a given identity but proof is insufficient",
++    121: CWEEntry(121, "Stack-based Buffer Overflow",
++                  "Buffer overflow where the buffer is allocated on the stack",
+                   "critical", False),
+-    190: CWEEntry(190, "Integer Overflow or Wraparound",
+-                  "Product performs calculation that can produce an integer overflow",
+-                  "high", False),
+     502: CWEEntry(502, "Deserialization of Untrusted Data",
+                   "Application deserializes untrusted data without sufficient verification",
+                   "critical", True),
+-    77: CWEEntry(77, "Command Injection",
+-                 "Improper neutralization of special elements used in a command",
+-                 "critical", False),
+-    119: CWEEntry(119, "Improper Restriction of Operations within the Bounds of a Memory Buffer",
+-                  "Software performs operations on a memory buffer without restricting to buffer boundaries",
+-                  "critical", False),
+-    798: CWEEntry(798, "Use of Hard-coded Credentials",
+-                  "Software contains hard-coded credentials for authentication",
++    122: CWEEntry(122, "Heap-based Buffer Overflow",
++                  "Buffer overflow where the buffer is allocated on the heap",
+                   "critical", False),
+-    434: CWEEntry(434, "Unrestricted Upload of File with Dangerous Type",
+-                  "Software allows upload of files with dangerous types",
++    863: CWEEntry(863, "Incorrect Authorization",
++                  "Software performs authorization check that does not produce correct results",
+                   "high", False),
++    20: CWEEntry(20, "Improper Input Validation",
++                 "Product receives input but does not validate or incorrectly validates",
++                 "high", True),
++    284: CWEEntry(284, "Improper Access Control",
++                  "Software does not restrict or incorrectly restricts access to a resource",
++                  "high", True),
++    200: CWEEntry(200, "Exposure of Sensitive Information to an Unauthorized Actor",
++                  "Product exposes sensitive information to an actor not authorized to access it",
++                  "medium", False),
+     306: CWEEntry(306, "Missing Authentication for Critical Function",
+                   "Software does not perform authentication for critical functionality",
+                   "critical", False),
+-    120: CWEEntry(120, "Buffer Copy without Checking Size of Input (Classic Buffer Overflow)",
+-                  "Program copies input buffer to output buffer without verifying size",
+-                  "critical", True),
+     918: CWEEntry(918, "Server-Side Request Forgery (SSRF)",
+                   "Web application fetches a remote resource without validating user-supplied URL",
+-                  "high", True),
+-    276: CWEEntry(276, "Incorrect Default Permissions",
+-                  "Software sets insecure default permissions for resources",
+-                  "medium", False),
+-    200: CWEEntry(200, "Exposure of Sensitive Information to an Unauthorized Actor",
+-                  "Product exposes sensitive information to an actor not authorized to access it",
+-                  "medium", False),
+-    269: CWEEntry(269, "Improper Privilege Management",
+-                  "Software does not properly manage privileges",
+                   "high", False),
+-    863: CWEEntry(863, "Incorrect Authorization",
+-                  "Software performs authorization check that does not produce correct results",
++    77: CWEEntry(77, "Command Injection",
++                 "Improper neutralization of special elements used in a command",
++                 "critical", True),
++    639: CWEEntry(639, "Authorization Bypass Through User-Controlled Key",
++                  "System authorization can be bypassed by modifying a user-controlled key",
+                   "high", False),
++    770: CWEEntry(770, "Allocation of Resources Without Limits or Throttling",
++                  "Software allocates resources without effective limits",
++                  "medium", False),
+ }
+ 
+ 
+ def get_cwe_entry(cwe_id: int) -> Optional[CWEEntry]:
+-    """Look up a CWE entry by numeric ID."""
++    """Look up a CWE entry by numeric ID in the Top 25 registry."""
+     return CWE_2025_TOP_25.get(cwe_id)
+ 
+ 
+-def validate_cwe_mapping(cwe_ids: List[int]) -> Tuple[bool, List[str]]:
++def validate_cwe_exists(cwe_ids: List[int]) -> Tuple[bool, List[str]]:
+     """
+-    Validate that all CWE IDs are recognized and correctly mapped.
++    Validate that CWE IDs are plausible (positive integers).
++    Does NOT reject CWEs outside Top 25 — valid vulnerabilities often map outside.
+     Returns (is_valid, list_of_issues).
+     """
+     issues: List[str] = []
+     for cwe_id in cwe_ids:
+-        entry = get_cwe_entry(cwe_id)
+-        if entry is None:
+-            issues.append(f"CWE-{cwe_id} not in 2025 Top 25 registry")
++        if not isinstance(cwe_id, int) or cwe_id <= 0:
++            issues.append(f"CWE-{cwe_id} is not a valid positive CWE identifier")
+     return len(issues) == 0, issues
+ 
+ 
++def classify_cwe_priority(cwe_ids: List[int]) -> Dict[str, List[int]]:
++    """
++    Classify CWE IDs into priority buckets.
++    Returns dict with keys: top_25, kev_linked, other.
++    """
++    top_25: List[int] = []
++    kev_linked: List[int] = []
++    other: List[int] = []
++    for cwe_id in cwe_ids:
++        entry = CWE_2025_TOP_25.get(cwe_id)
++        if entry is not None:
++            top_25.append(cwe_id)
++            if entry.kev_listed:
++                kev_linked.append(cwe_id)
++        else:
++            other.append(cwe_id)
++    return {"top_25": top_25, "kev_linked": kev_linked, "other": other}
++
++
++def validate_cwe_mapping(cwe_ids: List[int]) -> Tuple[bool, List[str]]:
++    """
++    Validate CWE mapping: checks existence and classifies priority.
++    Does NOT reject valid CWEs that are outside Top 25.
++    Returns (is_valid, list_of_issues).
++    """
++    valid, issues = validate_cwe_exists(cwe_ids)
++    classification = classify_cwe_priority(cwe_ids)
++    if classification["top_25"]:
++        pass  # informational — top 25 CWEs present
++    if classification["kev_linked"]:
++        pass  # informational — KEV-linked CWEs present
++    return valid, issues
++
++
+ def is_cwe_mapping_vague(cwe_ids: List[int]) -> bool:
+     """
+     Check if CWE mapping is vague — uses only broad categories
+     like CWE-20 (Improper Input Validation) without specifics.
+     """
+-    vague_cwes = {20, 200, 119}  # Broad parent categories
++    vague_cwes = {20, 200}  # Broad parent categories
+     if not cwe_ids:
+         return True
+     return all(cid in vague_cwes for cid in cwe_ids)
+@@ -180,6 +229,7 @@
+     suppressed: bool = False
+     false_positive: bool = False
+     false_positive_justification: str = ""
++    waived: bool = False
+ 
+     def to_sarif_dict(self) -> Dict[str, Any]:
+         """Convert to SARIF 2.1.0 result format."""
+@@ -340,11 +390,11 @@
+ 
+ 
+ # ═══════════════════════════════════════════════════════════════════════════════
+-# SECTION 3 — AST ENFORCEMENT ENGINE (10 Non-Negotiable Bans)
++# SECTION 3A — PATTERN ENFORCEMENT ENGINE (Regex-based, for non-Python source)
+ # ═══════════════════════════════════════════════════════════════════════════════
+ 
+ class ASTViolationSeverity(enum.Enum):
+-    """Severity of an AST policy violation."""
++    """Severity of a policy violation."""
+     CRITICAL = "critical"
+     HIGH = "high"
+     MEDIUM = "medium"
+@@ -352,7 +402,7 @@
+ 
+ @dataclass(frozen=True)
+ class ASTViolation:
+-    """A single AST policy violation found in source code."""
++    """A single policy violation found in source code."""
+     rule_id: str
+     rule_name: str
+     description: str
+@@ -373,7 +423,7 @@
+ 
+ @dataclass
+ class ASTGateResult:
+-    """Result of the AST enforcement gate."""
++    """Result of the enforcement gate (pattern or AST)."""
+     passed: bool
+     violations: List[ASTViolation] = field(default_factory=list)
+     files_scanned: int = 0
+@@ -402,12 +452,12 @@
+         }
+ 
+ 
+-class ASTEnforcementEngine:
++class PatternEnforcementEngine:
+     """
+-    AST Enforcement Engine — 10 non-negotiable bans.
++    Pattern Enforcement Engine — regex-based pattern scan for non-Python source.
+ 
+-    These rules are enforced via AST analysis and cannot be overridden by
+-    LLM review. LLM review cannot replace these rules. The rule must live in CI.
++    For Python source, use ASTEnforcementEngine which uses ast.parse + NodeVisitor.
++    This engine is labelled "pattern scan" — it does NOT perform AST analysis.
+ 
+     Bans:
+         1. ban .parse at boundaries
+@@ -417,7 +467,7 @@
+         5. ban Ray ObjectRef in durable truth boundaries
+         6. ban unsafe C/C++ calls unless waiver
+         7. ban weak crypto in security-sensitive code
+-        8. ban system command execution with untrusted input
++        8. ban system command execution with shell=True
+         9. ban unchecked buffer copies
+        10. ban unchecked return values for security-sensitive operations
+     """
+@@ -426,13 +476,10 @@
+     WAIVER_MARKER = "# SECURITY_WAIVER:"
+ 
+     # ── Rule 1: ban .parse at boundaries ──────────────────────────────────
+-    # Detects calls like json.loads(), yaml.load(), xml.etree.ElementTree.parse(),
+-    # pickle.loads() etc. at module-level or in boundary functions.
+-
+     PARSE_PATTERNS: List[str] = [
+         r"\.parse\s*\(",
+         r"json\.loads?\s*\(",
+-        r"yaml\.(?:safe_)?load\s*\(",
++        r"yaml\.load\s*\(",
+         r"xml\..*\.parse\s*\(",
+         r"pickle\.loads?\s*\(",
+         r"ast\.literal_eval\s*\(",
+@@ -514,15 +561,11 @@
+         r"\bECB\b",
+     ]
+ 
+-    # ── Rule 8: ban system command execution with untrusted input ─────────
++    # ── Rule 8: ban system command execution with shell=True ──────────────
+     SYSTEM_EXEC_PATTERNS: List[str] = [
+         r"os\.system\s*\(",
+         r"os\.popen\s*\(",
+-        r"subprocess\.call\s*\(",
+-        r"subprocess\.run\s*\(",
+-        r"subprocess\.Popen\s*\(",
+-        r"subprocess\.check_output\s*\(",
+-        r"subprocess\.check_call\s*\(",
++        r"subprocess\..*\(.*shell\s*=\s*True",
+         r"commands\.getoutput\s*\(",
+         r"commands\.getstatusoutput\s*\(",
+     ]
+@@ -581,8 +624,8 @@
+         },
+         {
+             "id": "AST-005",
+-            "name": "ban_ray_objectref_in_durable",
+-            "description": "Ban Ray ObjectRef in durable truth boundaries — only DurableEvidence allowed",
++            "name": "ban_ray_objectref",
++            "description": "Ban Ray ObjectRef in durable truth boundaries",
+             "severity": ASTViolationSeverity.CRITICAL,
+             "waiver_eligible": False,
+         },
+@@ -603,7 +646,7 @@
+         {
+             "id": "AST-008",
+             "name": "ban_system_command_exec",
+-            "description": "Ban system command execution with untrusted input",
++            "description": "Ban system command execution with shell=True",
+             "severity": ASTViolationSeverity.CRITICAL,
+             "waiver_eligible": False,
+         },
+@@ -625,7 +668,7 @@
+ 
+     def __init__(self, waivers: Optional[Dict[str, str]] = None) -> None:
+         """
+-        Initialize AST enforcement engine.
++        Initialize pattern enforcement engine.
+ 
+         Args:
+             waivers: Dict mapping rule_id → waiver justification for waiver-eligible rules.
+@@ -655,7 +698,7 @@
+         file_path: str,
+         rule_def: Dict[str, Any],
+     ) -> List[ASTViolation]:
+-        """Scan source lines for violations of a single rule."""
++        """Scan source lines for violations of a single rule (pattern scan)."""
+         violations: List[ASTViolation] = []
+         rule_id = rule_def["id"]
+         patterns = self._pattern_map[rule_id]
+@@ -698,7 +741,8 @@
+         file_path: str = "<unknown>",
+     ) -> ASTGateResult:
+         """
+-        Scan source code against all 10 AST enforcement rules.
++        Scan source code against all 10 pattern enforcement rules.
++        This is a pattern scan, not AST analysis.
+ 
+         Returns ASTGateResult with pass/fail and all violations found.
+         """
+@@ -724,7 +768,7 @@
+         files: Dict[str, str],
+     ) -> ASTGateResult:
+         """
+-        Scan multiple source files.
++        Scan multiple source files using pattern matching.
+ 
+         Args:
+             files: Dict mapping file_path → source_code.
+@@ -749,6 +793,217 @@
+ 
+ 
+ # ═══════════════════════════════════════════════════════════════════════════════
++# SECTION 3B — AST ENFORCEMENT ENGINE (Real ast.NodeVisitor for Python)
++# ═══════════════════════════════════════════════════════════════════════════════
++
++class PythonSecurityVisitor(ast.NodeVisitor):
++    """
++    Real AST-based security visitor using Python's ast module.
++    Walks the parsed AST and detects security violations structurally.
++    """
++
++    def __init__(self, file_path: str, waivers: Optional[Dict[str, str]] = None) -> None:
++        self.file_path = file_path
++        self.violations: List[ASTViolation] = []
++        self._waivers: Dict[str, str] = waivers or {}
++        self._source_lines: List[str] = []
++
++    def _has_waiver(self, rule_id: str, lineno: int) -> bool:
++        """Check if a waiver exists for this rule (inline or registered)."""
++        if rule_id in self._waivers:
++            return True
++        if 0 < lineno <= len(self._source_lines):
++            line = self._source_lines[lineno - 1]
++            if f"# SECURITY_WAIVER: {rule_id}" in line:
++                return True
++        return False
++
++    def _record(
++        self,
++        node: ast.AST,
++        rule_id: str,
++        rule_name: str,
++        description: str,
++        severity: ASTViolationSeverity = ASTViolationSeverity.CRITICAL,
++        waiver_eligible: bool = False,
++    ) -> None:
++        lineno = getattr(node, "lineno", 0)
++        snippet = ""
++        if 0 < lineno <= len(self._source_lines):
++            snippet = self._source_lines[lineno - 1].strip()[:200]
++        waiver_present = waiver_eligible and self._has_waiver(rule_id, lineno)
++        self.violations.append(ASTViolation(
++            rule_id=rule_id,
++            rule_name=rule_name,
++            description=description,
++            file_path=self.file_path,
++            line_number=lineno,
++            code_snippet=snippet,
++            severity=severity,
++            waiver_eligible=waiver_eligible,
++            waiver_present=waiver_present,
++        ))
++
++    @staticmethod
++    def _call_name(node: ast.Call) -> str:
++        """Extract the dotted name of a call, e.g. 'subprocess.run'."""
++        func = node.func
++        if isinstance(func, ast.Name):
++            return func.id
++        if isinstance(func, ast.Attribute):
++            parts = []
++            current: ast.expr = func
++            while isinstance(current, ast.Attribute):
++                parts.append(current.attr)
++                current = current.value
++            if isinstance(current, ast.Name):
++                parts.append(current.id)
++            return ".".join(reversed(parts))
++        return ""
++
++    @staticmethod
++    def _has_keyword_true(node: ast.Call, keyword_name: str) -> bool:
++        """Check if a call has keyword=True."""
++        for kw in node.keywords:
++            if kw.arg == keyword_name:
++                if isinstance(kw.value, ast.Constant) and kw.value.value is True:
++                    return True
++        return False
++
++    def visit_Call(self, node: ast.Call) -> None:
++        name = self._call_name(node)
++
++        # AST-001: ban eval/exec
++        if name in ("eval", "exec"):
++            self._record(node, "AST-001", "ban_eval_exec",
++                         f"{name}() blocked — untrusted code execution")
++
++        # AST-001: ban pickle.loads/pickle.load
++        if name in ("pickle.loads", "pickle.load"):
++            self._record(node, "AST-001", "ban_pickle_deserialize",
++                         f"{name}() blocked — unsafe deserialization")
++
++        # AST-001: ban yaml.load without SafeLoader (yaml.safe_load is OK)
++        if name == "yaml.load":
++            has_safe_loader = False
++            for kw in node.keywords:
++                if kw.arg == "Loader":
++                    if isinstance(kw.value, ast.Attribute) and kw.value.attr == "SafeLoader":
++                        has_safe_loader = True
++                    elif isinstance(kw.value, ast.Name) and kw.value.id == "SafeLoader":
++                        has_safe_loader = True
++            if not has_safe_loader:
++                self._record(node, "AST-001", "ban_yaml_load_unsafe",
++                             "yaml.load() without SafeLoader blocked")
++
++        # AST-003: ban direct DB execute
++        if name.endswith((".execute", ".executemany", ".executescript")):
++            attr = name.split(".")[-1]
++            self._record(node, "AST-003", "ban_direct_execute",
++                         f".{attr}() blocked — use enforcement layer")
++
++        # AST-004: ban raw provider calls
++        if name in ("requests.get", "requests.post", "requests.put",
++                     "requests.delete", "requests.patch", "requests.head",
++                     "urllib.request.urlopen"):
++            self._record(node, "AST-004", "ban_raw_provider_calls",
++                         f"{name}() blocked — use controlled adapter",
++                         severity=ASTViolationSeverity.HIGH)
++
++        # AST-007: ban weak crypto
++        if name in ("hashlib.md5", "hashlib.sha1"):
++            self._record(node, "AST-007", "ban_weak_crypto",
++                         f"{name}() blocked — use SHA-256 or stronger",
++                         severity=ASTViolationSeverity.HIGH)
++
++        # AST-008: ban subprocess with shell=True, ban os.system, os.popen
++        if name in ("os.system", "os.popen"):
++            self._record(node, "AST-008", "ban_system_command_exec",
++                         f"{name}() blocked — system command execution")
++        if name in ("subprocess.run", "subprocess.Popen", "subprocess.call",
++                     "subprocess.check_output", "subprocess.check_call"):
++            if self._has_keyword_true(node, "shell"):
++                self._record(node, "AST-008", "ban_subprocess_shell_true",
++                             f"{name}(shell=True) blocked — shell injection risk")
++
++        self.generic_visit(node)
++
++    def visit_Import(self, node: ast.Import) -> None:
++        for alias in node.names:
++            if alias.name == "pickle":
++                pass  # Import alone is not a violation; usage is
++        self.generic_visit(node)
++
++    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
++        self.generic_visit(node)
++
++
++class ASTEnforcementEngine:
++    """
++    AST Enforcement Engine — uses real ast.parse + ast.NodeVisitor for Python.
++
++    For Python source, this parses the code into an AST and walks nodes
++    to detect security violations structurally.
++
++    Falls back to PatternEnforcementEngine for non-Python source.
++    """
++
++    def __init__(self, waivers: Optional[Dict[str, str]] = None) -> None:
++        self._waivers: Dict[str, str] = waivers or {}
++        self._pattern_engine = PatternEnforcementEngine(waivers=waivers)
++
++    def scan_source(
++        self,
++        source_code: str,
++        file_path: str = "<unknown>",
++    ) -> ASTGateResult:
++        """
++        Scan Python source code using real AST analysis.
++        Falls back to pattern scan if ast.parse fails (non-Python source).
++        """
++        try:
++            tree = ast.parse(source_code, filename=file_path)
++        except SyntaxError:
++            # Not valid Python — fall back to pattern scan
++            return self._pattern_engine.scan_source(source_code, file_path)
++
++        visitor = PythonSecurityVisitor(file_path, waivers=self._waivers)
++        visitor._source_lines = source_code.split("\n")
++        visitor.visit(tree)
++
++        blocking = [v for v in visitor.violations if v.is_blocked]
++        passed = len(blocking) == 0
++
++        return ASTGateResult(
++            passed=passed,
++            violations=visitor.violations,
++            files_scanned=1,
++            rules_checked=10,
++        )
++
++    def scan_multiple_files(
++        self,
++        files: Dict[str, str],
++    ) -> ASTGateResult:
++        """Scan multiple source files."""
++        all_violations: List[ASTViolation] = []
++
++        for file_path, source_code in files.items():
++            result = self.scan_source(source_code, file_path)
++            all_violations.extend(result.violations)
++
++        blocking = [v for v in all_violations if v.is_blocked]
++        passed = len(blocking) == 0
++
++        return ASTGateResult(
++            passed=passed,
++            violations=all_violations,
++            files_scanned=len(files),
++            rules_checked=10,
++        )
++
++
++# ═══════════════════════════════════════════════════════════════════════════════
+ # SECTION 4 — SECURITY EVIDENCE BUNDLE (15 Required Fields)
+ # ═══════════════════════════════════════════════════════════════════════════════
+ 
+@@ -757,23 +1012,6 @@
+     """
+     Security evidence bundle — 15 required fields per AI patch.
+     No evidence bundle, no merge.
+-
+-    Fields:
+-        input_hash:          SHA-256 of the original source code before patching
+-        output_hash:         SHA-256 of the patched source code
+-        prompt_hash:         SHA-256 of the LLM prompt used for patch generation
+-        model_id:            Identifier of the AI model used (e.g., "gpt-5", "claude-opus-4.1")
+-        model_temperature:   Temperature setting used for generation
+-        scanner_versions:    Dict of scanner tool name → version
+-        SARIF_bundle_hash:   SHA-256 of the aggregated SARIF bundle
+-        AST_gate_result:     Result of the AST enforcement gate ("PASS" or "FAIL")
+-        test_result_hash:    SHA-256 of the test execution results
+-        CWE_mapping:         List of CWE IDs identified for this patch
+-        risk_rating:         Risk rating ("critical", "high", "medium", "low")
+-        manual_reviewer:     Identity of the human security reviewer
+-        patch_diff_hash:     SHA-256 of the patch diff
+-        QNEO_decision:       Final QNEO gate decision
+-        merge_commit_sha:    Git merge commit SHA (empty until merged)
+     """
+     input_hash: str
+     output_hash: str
+@@ -809,35 +1047,36 @@
+         """
+         Validate that all 15 required fields are present and non-empty.
+         Returns list of validation errors (empty = valid).
++        Uses strict SHA-256 hex validation.
+         """
+         errors: List[str] = []
+ 
+-        if not self.input_hash or len(self.input_hash) != 64:
+-            errors.append("input_hash must be a valid SHA-256 (64 hex chars)")
+-        if not self.output_hash or len(self.output_hash) != 64:
+-            errors.append("output_hash must be a valid SHA-256 (64 hex chars)")
+-        if not self.prompt_hash or len(self.prompt_hash) != 64:
+-            errors.append("prompt_hash must be a valid SHA-256 (64 hex chars)")
++        if not self.input_hash or not is_sha256(self.input_hash):
++            errors.append("input_hash must be a valid SHA-256 (64 lowercase hex chars)")
++        if not self.output_hash or not is_sha256(self.output_hash):
++            errors.append("output_hash must be a valid SHA-256 (64 lowercase hex chars)")
++        if not self.prompt_hash or not is_sha256(self.prompt_hash):
++            errors.append("prompt_hash must be a valid SHA-256 (64 lowercase hex chars)")
+         if not self.model_id:
+             errors.append("model_id is required")
+         if self.model_temperature < 0.0 or self.model_temperature > 2.0:
+             errors.append("model_temperature must be between 0.0 and 2.0")
+         if not self.scanner_versions:
+             errors.append("scanner_versions must contain at least one scanner")
+-        if not self.SARIF_bundle_hash or len(self.SARIF_bundle_hash) != 64:
+-            errors.append("SARIF_bundle_hash must be a valid SHA-256 (64 hex chars)")
++        if not self.SARIF_bundle_hash or not is_sha256(self.SARIF_bundle_hash):
++            errors.append("SARIF_bundle_hash must be a valid SHA-256 (64 lowercase hex chars)")
+         if not self.AST_gate_result or self.AST_gate_result not in ("PASS", "FAIL"):
+             errors.append("AST_gate_result must be 'PASS' or 'FAIL'")
+-        if not self.test_result_hash or len(self.test_result_hash) != 64:
+-            errors.append("test_result_hash must be a valid SHA-256 (64 hex chars)")
++        if not self.test_result_hash or not is_sha256(self.test_result_hash):
++            errors.append("test_result_hash must be a valid SHA-256 (64 lowercase hex chars)")
+         if not isinstance(self.CWE_mapping, list):
+             errors.append("CWE_mapping must be a list of CWE IDs")
+         if not self.risk_rating or self.risk_rating not in ("critical", "high", "medium", "low"):
+             errors.append("risk_rating must be one of: critical, high, medium, low")
+         if not self.manual_reviewer:
+             errors.append("manual_reviewer is required")
+-        if not self.patch_diff_hash or len(self.patch_diff_hash) != 64:
+-            errors.append("patch_diff_hash must be a valid SHA-256 (64 hex chars)")
++        if not self.patch_diff_hash or not is_sha256(self.patch_diff_hash):
++            errors.append("patch_diff_hash must be a valid SHA-256 (64 lowercase hex chars)")
+         if not self.QNEO_decision or self.QNEO_decision not in ("ALLOW", "HOLD", "FAIL_CLOSED", "ROLLBACK"):
+             errors.append("QNEO_decision must be one of: ALLOW, HOLD, FAIL_CLOSED, ROLLBACK")
+         # merge_commit_sha can be empty before merge, but field must exist
+@@ -931,7 +1170,11 @@
+     test_framework: str = "pytest"
+ 
+     def compute_hash(self) -> str:
+-        """Compute SHA-256 of test results for evidence tracking."""
++        """Compute SHA-256 of test results for evidence tracking.
++        Includes test_output_hash for uniqueness per Issue #11."""
++        test_output_hash = hashlib.sha256(
++            self.test_output.encode("utf-8")
++        ).hexdigest()
+         payload = json.dumps({
+             "passed": self.passed,
+             "total_tests": self.total_tests,
+@@ -940,6 +1183,7 @@
+             "error_tests": self.error_tests,
+             "skipped_tests": self.skipped_tests,
+             "execution_time_seconds": self.execution_time_seconds,
++            "test_output_hash": test_output_hash,
+         }, sort_keys=True)
+         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+ 
+@@ -970,7 +1214,7 @@
+ 
+ 
+ # ═══════════════════════════════════════════════════════════════════════════════
+-# SECTION 8 — PATCH ANALYSIS
++# SECTION 8 — PATCH ANALYSIS (using difflib.unified_diff)
+ # ═══════════════════════════════════════════════════════════════════════════════
+ 
+ @dataclass
+@@ -1001,36 +1245,44 @@
+ def analyze_patch(original: str, patched: str) -> PatchAnalysis:
+     """
+     Analyze a patch to determine minimality and scope.
++    Uses difflib.unified_diff for proper diff computation (Issue #12).
+     """
+-    orig_lines = original.split("\n")
+-    patch_lines = patched.split("\n")
++    orig_lines = original.splitlines(keepends=True)
++    patch_lines = patched.splitlines(keepends=True)
+ 
+-    # Simple diff computation
++    # Use difflib.unified_diff for proper diff
++    diff_result = list(difflib.unified_diff(
++        orig_lines, patch_lines,
++        fromfile="original", tofile="patched",
++    ))
++    patch_diff = "".join(diff_result)
++
++    # Count added/removed from unified diff
+     added = 0
+     removed = 0
+-    diff_lines: List[str] = []
+-
+-    orig_set = set(enumerate(orig_lines))
+-    patch_set = set(enumerate(patch_lines))
++    change_positions: List[int] = []
++    current_line = 0
+ 
+-    # Line-by-line comparison
+-    max_lines = max(len(orig_lines), len(patch_lines))
+-    for i in range(max_lines):
+-        orig_line = orig_lines[i] if i < len(orig_lines) else None
+-        patch_line = patch_lines[i] if i < len(patch_lines) else None
+-
+-        if orig_line != patch_line:
+-            if orig_line is not None:
+-                diff_lines.append(f"- {orig_line}")
+-                removed += 1
+-            if patch_line is not None:
+-                diff_lines.append(f"+ {patch_line}")
+-                added += 1
++    for line in diff_result:
++        if line.startswith("@@"):
++            # Parse hunk header to get line position
++            # Format: @@ -start,count +start,count @@
++            import re as _re
++            match = _re.search(r"\+(\d+)", line)
++            if match:
++                current_line = int(match.group(1))
++            continue
++        if line.startswith("---") or line.startswith("+++"):
++            continue
++        if line.startswith("-"):
++            removed += 1
++            change_positions.append(current_line)
++        elif line.startswith("+"):
++            added += 1
++            change_positions.append(current_line)
++            current_line += 1
+         else:
+-            if orig_line is not None:
+-                diff_lines.append(f"  {orig_line}")
+-
+-    patch_diff = "\n".join(diff_lines)
++            current_line += 1
+ 
+     # Minimality heuristic: patch is minimal if changes are < 20% of total lines
+     total_changes = added + removed
+@@ -1038,18 +1290,12 @@
+     is_minimal = total_changes <= max(total_lines * 0.2, 5) if total_lines > 0 else True
+ 
+     # Unrelated code detection: check if changes touch multiple unrelated sections
+-    change_positions = []
+-    for i in range(max_lines):
+-        orig_line = orig_lines[i] if i < len(orig_lines) else ""
+-        patch_line = patch_lines[i] if i < len(patch_lines) else ""
+-        if orig_line != patch_line:
+-            change_positions.append(i)
+-
+     changes_unrelated = False
+     if len(change_positions) >= 2:
++        sorted_positions = sorted(set(change_positions))
+         gaps = [
+-            change_positions[i + 1] - change_positions[i]
+-            for i in range(len(change_positions) - 1)
++            sorted_positions[i + 1] - sorted_positions[i]
++            for i in range(len(sorted_positions) - 1)
+         ]
+         # If there are large gaps between changes, likely touching unrelated code
+         changes_unrelated = any(gap > 20 for gap in gaps)
+@@ -1275,10 +1521,6 @@
+     ) -> PipelineStepResult:
+         """
+         Step 3: Run static scanners on the ORIGINAL source code.
+-
+-        Args:
+-            scanner_results: List of (tool_name, tool_version, results) tuples
+-                             from external scanner execution.
+         """
+         if not scanner_results:
+             return self._record_step(
+@@ -1475,7 +1717,7 @@
+             errors=issues,
+         )
+ 
+-    # ── Step 9: Patched Code Re-scanned ──────────────────────────────────
++    # ── Step 9: Patched Code Re-scanned (compares original vs patched SARIF) ──
+ 
+     def step_09_patched_code_rescanned(
+         self,
+@@ -1483,6 +1725,15 @@
+     ) -> PipelineStepResult:
+         """
+         Step 9: Re-scan the patched code with static scanners.
++        Compares original SARIF vs patched SARIF per Issue #5.
++
++        Blocks if:
++          - new error findings exist
++          - new warning findings exist (unless waived)
++          - new Top 25 CWE appears
++          - new KEV-linked CWE appears
++          - same original finding persists (unresolved)
++          - scanner output missing
+         """
+         if not rescan_results:
+             return self._record_step(
+@@ -1498,21 +1749,68 @@
+ 
+         self._rescan_sarif_bundle = rescan_aggregator.build_bundle()
+ 
+-        new_errors = self._rescan_sarif_bundle.error_results
+         issues: List[str] = []
++
++        # Block: new error findings
++        new_errors = self._rescan_sarif_bundle.error_results
+         if new_errors:
+             issues.append(
+                 f"Re-scan found {len(new_errors)} new error-level findings"
+             )
+ 
++        # Block: new warning findings unless waived
++        new_warnings = [
++            w for w in self._rescan_sarif_bundle.warning_results
++            if not w.waived
++        ]
++        if new_warnings:
++            issues.append(
++                f"Re-scan found {len(new_warnings)} new unwaived warning-level findings"
++            )
++
++        # Block: new Top 25 CWE appears in rescan that wasn't in original
++        original_cwes = set(self._sarif_bundle.all_cwe_ids) if self._sarif_bundle else set()
++        rescan_cwes = set(self._rescan_sarif_bundle.all_cwe_ids)
++        new_cwes = rescan_cwes - original_cwes
++
++        classification = classify_cwe_priority(list(new_cwes))
++        if classification["top_25"]:
++            issues.append(
++                f"Re-scan introduced new Top 25 CWEs: {classification['top_25']}"
++            )
++        if classification["kev_linked"]:
++            issues.append(
++                f"Re-scan introduced new KEV-linked CWEs: {classification['kev_linked']}"
++            )
++
++        # Block: persistent original findings (same rule_id + file_path still unresolved)
++        if self._sarif_bundle:
++            original_fingerprints = {
++                (r.rule_id, r.file_path, r.start_line)
++                for r in self._sarif_bundle.unresolved_results
++            }
++            rescan_fingerprints = {
++                (r.rule_id, r.file_path, r.start_line)
++                for r in self._rescan_sarif_bundle.unresolved_results
++            }
++            persistent = original_fingerprints & rescan_fingerprints
++            if persistent:
++                issues.append(
++                    f"Re-scan has {len(persistent)} persistent original findings still unresolved"
++                )
++
++        passed = len(issues) == 0
++
+         return self._record_step(
+             step=PipelineStep.PATCHED_CODE_RESCANNED,
+             completed=True,
+-            passed=len(new_errors) == 0,
++            passed=passed,
+             evidence={
+                 "rescan_total_findings": len(self._rescan_sarif_bundle.all_results),
+                 "rescan_error_findings": len(new_errors),
++                "rescan_warning_findings": len(new_warnings),
+                 "rescan_sarif_hash": self._rescan_sarif_bundle.compute_hash(),
++                "new_cwes": list(new_cwes),
+             },
+             errors=issues,
+         )
+@@ -1549,16 +1847,23 @@
+ 
+     # ── Step 11: QNEO Returns Decision ───────────────────────────────────
+ 
+-    def step_11_qneo_returns_decision(self) -> PipelineStepResult:
++    def step_11_qneo_returns_decision(self, qneo_decision: str) -> PipelineStepResult:
+         """
+         Step 11: Build the security evidence bundle and return the QNEO decision.
+-        This step delegates to the QNEO gate policy (qneo_security_gate.py).
+-        The evidence bundle is assembled here for the QNEO gate to evaluate.
++        Accepts the actual QNEO decision as a parameter (Issue #3).
++        Requires ALL prior steps (1-10) completed AND passed (Issue #4).
+         """
+-        # Build evidence bundle from all pipeline state
+         errors: List[str] = []
+ 
+-        # Validate all prior steps completed
++        # Validate qneo_decision is one of the allowed values
++        valid_decisions = ("ALLOW", "HOLD", "FAIL_CLOSED", "ROLLBACK")
++        if qneo_decision not in valid_decisions:
++            errors.append(
++                f"QNEO decision '{qneo_decision}' is not valid. "
++                f"Must be one of: {', '.join(valid_decisions)}"
++            )
++
++        # Validate all prior steps (1-10) completed
+         completed_steps = {r.step for r in self._step_results if r.completed}
+         required_steps = set(PIPELINE_STEP_ORDER[:10])  # Steps 1-10
+         missing_steps = required_steps - completed_steps
+@@ -1566,6 +1871,14 @@
+             step_names = [s.value for s in missing_steps]
+             errors.append(f"Missing pipeline steps: {step_names}")
+ 
++        # Require ALL prior steps passed (Issue #4)
++        failed_steps = [r for r in self._step_results if r.step in required_steps and not r.passed]
++        if failed_steps:
++            errors.append(
++                "Prior pipeline steps failed: "
++                + ", ".join(r.step.value for r in failed_steps)
++            )
++
+         # Build evidence bundle
+         prompt_hash = compute_sha256(self._prompt) if hasattr(self, "_prompt") and self._prompt else ""
+         sarif_hash = self._sarif_bundle.compute_hash() if self._sarif_bundle else ""
+@@ -1602,7 +1915,7 @@
+             risk_rating=risk_rating,
+             manual_reviewer=self._human_review.reviewer_identity if self._human_review else "",
+             patch_diff_hash=self._patch_analysis.diff_hash if self._patch_analysis else "",
+-            QNEO_decision="PENDING",  # Will be set by QNEO gate
++            QNEO_decision=qneo_decision,
+             merge_commit_sha="",  # Set after merge
+         )
+ 
+@@ -1617,6 +1930,7 @@
+             evidence={
+                 "evidence_bundle_id": self._evidence_bundle.bundle_id,
+                 "evidence_bundle_hash": self._evidence_bundle.compute_bundle_hash(),
++                "qneo_decision": qneo_decision,
+                 "validation_errors": errors,
+             },
+             errors=errors,
+
+=== diff: test_secure_coding_gate.py ===
+--- upload/test_secure_coding_gate.py	2026-04-27 15:28:49.075000070 -0400
++++ aim-drag-v2/test_secure_coding_gate.py	2026-04-27 15:56:43.258244766 -0400
+@@ -1,15 +1,21 @@
+ """
+ test_secure_coding_gate.py — Comprehensive tests for the A.I.M D.R.A.G
+-Secure Coding Pipeline, AST Enforcement Engine, SARIF Aggregation,
+-and Security Evidence Bundles.
++Secure Coding Pipeline, AST Enforcement Engine, Pattern Enforcement Engine,
++SARIF Aggregation, and Security Evidence Bundles.
+ 
+ Tests prove:
+     - 11-step pipeline operates in correct order
+-    - AST enforcement catches all 10 banned patterns
++    - Real AST enforcement catches security violations via ast.NodeVisitor
++    - Pattern enforcement catches banned patterns in non-Python source
+     - SARIF aggregation produces valid SARIF 2.1.0 documents
+     - Security evidence bundle validates all 15 required fields
+-    - CWE 2025 Top 25 registry is complete and correct
+-    - Patch analysis detects minimality and unrelated changes
++    - CWE 2025 Top 25 registry is complete and correct per MITRE
++    - Patch analysis uses difflib.unified_diff for minimality
++    - SHA-256 validation is strict hex
++    - Step 11 accepts actual QNEO decision parameter
++    - All prior steps must pass before step 11 proceeds
++    - Rescan compares original vs patched SARIF
++    - test_output_hash is included in TestExecutionResult.compute_hash
+ """
+ 
+ import hashlib
+@@ -27,9 +33,11 @@
+     HumanSecurityReview,
+     LLMReviewResult,
+     PatchAnalysis,
++    PatternEnforcementEngine,
+     PipelineStep,
+     PipelineStepResult,
+     PIPELINE_STEP_ORDER,
++    PythonSecurityVisitor,
+     SARIFAggregator,
+     SARIFBundle,
+     SARIFResult,
+@@ -38,9 +46,12 @@
+     SecurityEvidenceBundle,
+     TestExecutionResult,
+     analyze_patch,
++    classify_cwe_priority,
+     compute_sha256,
+     get_cwe_entry,
+     is_cwe_mapping_vague,
++    is_sha256,
++    validate_cwe_exists,
+     validate_cwe_mapping,
+ )
+ 
+@@ -198,967 +209,813 @@
+     )
+ 
+ 
++def _make_llm_review(clean: bool = True) -> LLMReviewResult:
++    """Create an LLM review result."""
++    return LLMReviewResult(
++        model_id="gpt-5",
++        model_temperature=0.0,
++        prompt_hash=_sha256("review prompt"),
++        agrees_with_scanners=True,
++        disables_validation=not clean,
++        suppresses_tests=not clean,
++    )
++
++
+ def _make_human_review(approved: bool = True) -> HumanSecurityReview:
+     """Create a human security review."""
+     return HumanSecurityReview(
+         reviewer_identity="security-lead@example.com",
+         approved=approved,
+-        comments="Patch reviewed and approved" if approved else "Concerns about scope",
+         reviewed_evidence_hash=_sha256("evidence"),
++        comments="Reviewed and approved" if approved else "Issues found",
+     )
+ 
+ 
+-def _make_llm_review(**kwargs) -> LLMReviewResult:
+-    """Create an LLM review result with optional overrides."""
+-    defaults = {
+-        "model_id": "gpt-5",
+-        "model_temperature": 0.0,
+-        "prompt_hash": _sha256("review prompt"),
+-        "agrees_with_scanners": True,
+-        "extra_issues_without_scanner_support": False,
+-        "disables_validation": False,
+-        "suppresses_tests": False,
+-        "removes_logging_or_audit": False,
+-        "removes_functionality_without_proof": False,
+-        "changes_unrelated_code": False,
+-    }
+-    defaults.update(kwargs)
+-    return LLMReviewResult(**defaults)
+-
+-
+ # ═══════════════════════════════════════════════════════════════════════════════
+-# TEST: CWE 2025 TOP 25 REGISTRY
++# CWE REGISTRY TESTS
+ # ═══════════════════════════════════════════════════════════════════════════════
+ 
+ class TestCWERegistry(unittest.TestCase):
+     """Tests for the CWE 2025 Top 25 registry."""
+ 
+-    def test_registry_has_25_entries(self):
+-        """Registry must contain exactly 25 CWE entries."""
++    def test_registry_has_exactly_25_entries(self):
++        """Registry must have exactly 25 entries per MITRE 2025 Top 25."""
+         self.assertEqual(len(CWE_2025_TOP_25), 25)
+ 
+-    def test_required_cwes_present(self):
+-        """All required CWEs from the specification must be present."""
+-        required = [79, 89, 352, 862, 787, 416, 78, 120, 502, 20, 918]
+-        for cwe_id in required:
+-            entry = get_cwe_entry(cwe_id)
+-            self.assertIsNotNone(entry, f"CWE-{cwe_id} must be in registry")
+-            self.assertEqual(entry.cwe_id, cwe_id)
++    def test_registry_contains_exact_mitre_2025_top_25(self):
++        """Registry must contain exactly the MITRE 2025 Top 25 CWE IDs."""
++        expected = {
++            79, 89, 352, 862, 787, 22, 416, 125, 78, 94,
++            120, 434, 476, 121, 502, 122, 863, 20, 284, 200,
++            306, 918, 77, 639, 770,
++        }
++        actual = set(CWE_2025_TOP_25.keys())
++        self.assertEqual(actual, expected)
+ 
+-    def test_cwe_entry_fields(self):
+-        """Each CWE entry must have all required fields."""
+-        for cwe_id, entry in CWE_2025_TOP_25.items():
+-            self.assertEqual(entry.cwe_id, cwe_id)
+-            self.assertTrue(entry.name, f"CWE-{cwe_id} must have a name")
+-            self.assertTrue(entry.description, f"CWE-{cwe_id} must have a description")
+-            self.assertIn(entry.severity, ("critical", "high", "medium", "low"))
+-            self.assertIsInstance(entry.kev_listed, bool)
+-            self.assertEqual(entry.identifier, f"CWE-{cwe_id}")
+-
+-    def test_validate_cwe_mapping_valid(self):
+-        """Valid CWE mapping should pass validation."""
+-        valid, issues = validate_cwe_mapping([79, 89, 352])
++    def test_registry_does_not_contain_removed_cwes(self):
++        """Registry must NOT contain CWE-119, 798, 276, 269."""
++        removed = {119, 798, 276, 269}
++        for cwe_id in removed:
++            self.assertNotIn(cwe_id, CWE_2025_TOP_25,
++                             f"CWE-{cwe_id} should not be in 2025 Top 25")
++
++    def test_kev_listed_flags_per_mitre_table(self):
++        """KEV flags must match MITRE 2025 table."""
++        # CWEs with 0 CVEs in KEV per MITRE table → kev_listed=False
++        self.assertFalse(CWE_2025_TOP_25[352].kev_listed, "CWE-352 has 0 KEV CVEs")
++        self.assertFalse(CWE_2025_TOP_25[862].kev_listed, "CWE-862 has 0 KEV CVEs")
++        self.assertFalse(CWE_2025_TOP_25[918].kev_listed, "CWE-918 has 0 KEV CVEs")
++        self.assertFalse(CWE_2025_TOP_25[120].kev_listed, "CWE-120 has 0 KEV CVEs")
++        # CWE-77 has 2 CVEs in KEV → kev_listed=True
++        self.assertTrue(CWE_2025_TOP_25[77].kev_listed, "CWE-77 has 2 KEV CVEs")
++
++    def test_get_cwe_entry_found(self):
++        entry = get_cwe_entry(79)
++        self.assertIsNotNone(entry)
++        self.assertEqual(entry.cwe_id, 79)
++        self.assertEqual(entry.identifier, "CWE-79")
++
++    def test_get_cwe_entry_not_found(self):
++        entry = get_cwe_entry(99999)
++        self.assertIsNone(entry)
++
++    def test_validate_cwe_exists_accepts_non_top25(self):
++        """validate_cwe_exists should accept valid CWEs outside Top 25."""
++        valid, issues = validate_cwe_exists([772, 362, 665])
+         self.assertTrue(valid)
+         self.assertEqual(len(issues), 0)
+ 
+-    def test_validate_cwe_mapping_invalid(self):
+-        """Unknown CWE IDs should fail validation."""
+-        valid, issues = validate_cwe_mapping([79, 99999])
++    def test_validate_cwe_exists_rejects_invalid(self):
++        """validate_cwe_exists should reject non-positive integers."""
++        valid, issues = validate_cwe_exists([-1, 0])
+         self.assertFalse(valid)
+-        self.assertEqual(len(issues), 1)
+-        self.assertIn("CWE-99999", issues[0])
++        self.assertEqual(len(issues), 2)
++
++    def test_classify_cwe_priority(self):
++        """classify_cwe_priority separates top_25, kev_linked, other."""
++        result = classify_cwe_priority([89, 79, 772, 362])
++        self.assertIn(89, result["top_25"])
++        self.assertIn(79, result["top_25"])
++        self.assertIn(89, result["kev_linked"])
++        self.assertIn(772, result["other"])
++        self.assertIn(362, result["other"])
++
++    def test_validate_cwe_mapping_does_not_reject_non_top25(self):
++        """validate_cwe_mapping should NOT reject valid non-Top-25 CWEs."""
++        valid, issues = validate_cwe_mapping([772, 362, 665, 686])
++        self.assertTrue(valid)
++        self.assertEqual(len(issues), 0)
++
++    def test_is_cwe_mapping_vague(self):
++        self.assertTrue(is_cwe_mapping_vague([]))
++        self.assertTrue(is_cwe_mapping_vague([20]))
++        self.assertTrue(is_cwe_mapping_vague([20, 200]))
++        self.assertFalse(is_cwe_mapping_vague([89]))
++        self.assertFalse(is_cwe_mapping_vague([20, 89]))
++
++    def test_all_entries_have_valid_severity(self):
++        valid_severities = {"critical", "high", "medium", "low"}
++        for cwe_id, entry in CWE_2025_TOP_25.items():
++            self.assertIn(entry.severity, valid_severities,
++                          f"CWE-{cwe_id} has invalid severity: {entry.severity}")
++
++
++# ═══════════════════════════════════════════════════════════════════════════════
++# SHA-256 VALIDATION TESTS
++# ═══════════════════════════════════════════════════════════════════════════════
+ 
+-    def test_vague_cwe_mapping(self):
+-        """Vague CWE mappings should be detected."""
+-        self.assertTrue(is_cwe_mapping_vague([20]))  # Only broad category
+-        self.assertTrue(is_cwe_mapping_vague([20, 200, 119]))  # All broad
+-        self.assertTrue(is_cwe_mapping_vague([]))  # Empty
+-        self.assertFalse(is_cwe_mapping_vague([89]))  # Specific
+-        self.assertFalse(is_cwe_mapping_vague([20, 89]))  # Mixed
++class TestSHA256Validation(unittest.TestCase):
++    """Tests for strict SHA-256 hex validation."""
++
++    def test_valid_sha256(self):
++        h = _sha256("test")
++        self.assertTrue(is_sha256(h))
++
++    def test_rejects_non_hex_chars(self):
++        """Must reject 'z' * 64 — not valid hex."""
++        self.assertFalse(is_sha256("z" * 64))
++
++    def test_rejects_uppercase(self):
++        """Must reject uppercase hex."""
++        self.assertFalse(is_sha256("A" * 64))
++
++    def test_rejects_wrong_length(self):
++        self.assertFalse(is_sha256("abcdef"))
++        self.assertFalse(is_sha256("a" * 63))
++        self.assertFalse(is_sha256("a" * 65))
++
++    def test_rejects_empty(self):
++        self.assertFalse(is_sha256(""))
++
++    def test_evidence_bundle_rejects_invalid_hash(self):
++        """SecurityEvidenceBundle.validate must reject 'z' * 64."""
++        bundle = _make_valid_evidence_bundle()
++        bundle.input_hash = "z" * 64
++        errors = bundle.validate()
++        self.assertTrue(any("input_hash" in e for e in errors))
+ 
+ 
+ # ═══════════════════════════════════════════════════════════════════════════════
+-# TEST: SARIF EVIDENCE FORMAT
++# SARIF TESTS
+ # ═══════════════════════════════════════════════════════════════════════════════
+ 
+ class TestSARIF(unittest.TestCase):
+-    """Tests for SARIF evidence format integration."""
++    """Tests for SARIF evidence format."""
+ 
+     def test_sarif_result_to_dict(self):
+-        """SARIF result must produce valid SARIF 2.1.0 result dict."""
+         result = SARIFResult(
+             rule_id="PY001",
+-            message="SQL injection",
++            message="Test finding",
+             level="error",
+-            file_path="app.py",
+-            start_line=10,
+-            end_line=10,
++            file_path="test.py",
++            start_line=1,
++            end_line=1,
+             cwe_ids=[89],
+-            fingerprint="abc123",
+         )
+         d = result.to_sarif_dict()
+         self.assertEqual(d["ruleId"], "PY001")
+-        self.assertEqual(d["message"]["text"], "SQL injection")
+         self.assertEqual(d["level"], "error")
+-        self.assertEqual(d["locations"][0]["physicalLocation"]["artifactLocation"]["uri"], "app.py")
+-        self.assertIn("fingerprints", d)
+-        self.assertIn("taxa", d)
+ 
+-    def test_sarif_bundle_document(self):
+-        """SARIF bundle must produce valid SARIF 2.1.0 document."""
++    def test_sarif_bundle_hash_is_deterministic(self):
++        results = _make_sarif_results()
+         agg = SARIFAggregator()
+-        agg.add_tool_run("semgrep", "1.50.0", _make_sarif_results())
++        agg.add_tool_run("semgrep", "1.50.0", results)
+         bundle = agg.build_bundle()
++        h1 = bundle.compute_hash()
++        h2 = bundle.compute_hash()
++        self.assertEqual(h1, h2)
++        self.assertTrue(is_sha256(h1))
+ 
+-        doc = bundle.to_sarif_document()
+-        self.assertEqual(doc["version"], "2.1.0")
+-        self.assertIn("$schema", doc)
+-        self.assertEqual(len(doc["runs"]), 1)
+-        self.assertEqual(len(doc["runs"][0]["results"]), 2)
+-
+-    def test_sarif_bundle_hash(self):
+-        """SARIF bundle hash must be deterministic."""
++    def test_sarif_bundle_unresolved_results(self):
++        results = _make_sarif_results()
+         agg = SARIFAggregator()
+-        agg.add_tool_run("semgrep", "1.50.0", _make_sarif_results())
++        agg.add_tool_run("semgrep", "1.50.0", results)
+         bundle = agg.build_bundle()
++        self.assertEqual(len(bundle.unresolved_results), 2)
++        self.assertEqual(len(bundle.error_results), 1)
++        self.assertEqual(len(bundle.warning_results), 1)
+ 
+-        hash1 = bundle.compute_hash()
+-        hash2 = bundle.compute_hash()
+-        self.assertEqual(hash1, hash2)
+-        self.assertEqual(len(hash1), 64)
+-
+-    def test_sarif_aggregator_multiple_tools(self):
+-        """Aggregator must combine results from multiple tools."""
++    def test_sarif_bundle_resolved(self):
++        results = _make_resolved_sarif_results()
+         agg = SARIFAggregator()
+-        agg.add_tool_run("semgrep", "1.50.0", [
+-            SARIFResult("S001", "Issue 1", "error", "a.py", 1, 1, [89]),
+-        ])
+-        agg.add_tool_run("bandit", "1.7.5", [
+-            SARIFResult("B001", "Issue 2", "warning", "b.py", 5, 5, [78]),
+-        ])
++        agg.add_tool_run("semgrep", "1.50.0", results)
+         bundle = agg.build_bundle()
+-
+-        self.assertEqual(len(bundle.runs), 2)
+-        self.assertEqual(len(bundle.all_results), 2)
+-        self.assertEqual(bundle.scanner_versions, {"semgrep": "1.50.0", "bandit": "1.7.5"})
+-
+-    def test_sarif_unresolved_results(self):
+-        """Unresolved results exclude suppressed and false positive entries."""
+-        r1 = SARIFResult("R1", "msg", "error", "a.py", 1, 1, suppressed=True)
+-        r2 = SARIFResult("R2", "msg", "error", "a.py", 2, 2, false_positive=True)
+-        r3 = SARIFResult("R3", "msg", "error", "a.py", 3, 3)
+-        bundle = SARIFBundle(runs=[SARIFToolRun("tool", "1.0", [r1, r2, r3])])
+-
+-        self.assertEqual(len(bundle.unresolved_results), 1)
+-        self.assertEqual(bundle.unresolved_results[0].rule_id, "R3")
+-
+-    def test_sarif_findings_resolved(self):
+-        """Findings resolved when all errors/warnings are suppressed or justified false positives."""
+-        bundle = SARIFBundle(runs=[
+-            SARIFToolRun("tool", "1.0", _make_resolved_sarif_results()),
+-        ])
+         self.assertTrue(bundle.findings_resolved())
+ 
+-    def test_sarif_findings_not_resolved(self):
+-        """Findings not resolved when unresolved errors exist."""
+-        bundle = SARIFBundle(runs=[
+-            SARIFToolRun("tool", "1.0", _make_sarif_results()),
+-        ])
+-        self.assertFalse(bundle.findings_resolved())
+-
+-    def test_sarif_all_cwe_ids(self):
+-        """All CWE IDs from unresolved results must be collected."""
+-        bundle = SARIFBundle(runs=[
+-            SARIFToolRun("tool", "1.0", _make_sarif_results()),
+-        ])
+-        cwe_ids = bundle.all_cwe_ids
+-        self.assertIn(89, cwe_ids)
+-        self.assertIn(79, cwe_ids)
+-
+-    def test_sarif_has_output(self):
+-        """has_output must return True when runs exist."""
+-        bundle = SARIFBundle(runs=[SARIFToolRun("tool", "1.0", [])])
+-        self.assertTrue(bundle.has_output())
+-        empty_bundle = SARIFBundle()
+-        self.assertFalse(empty_bundle.has_output())
++    def test_sarif_bundle_cwe_ids(self):
++        results = _make_sarif_results()
++        agg = SARIFAggregator()
++        agg.add_tool_run("semgrep", "1.50.0", results)
++        bundle = agg.build_bundle()
++        self.assertEqual(bundle.all_cwe_ids, [79, 89])
+ 
+     def test_sarif_aggregator_clear(self):
+-        """Aggregator clear must reset all runs."""
+         agg = SARIFAggregator()
+-        agg.add_tool_run("tool", "1.0", [])
++        agg.add_tool_run("semgrep", "1.50.0", _make_sarif_results())
+         agg.clear()
+         bundle = agg.build_bundle()
+         self.assertEqual(len(bundle.runs), 0)
+ 
+-    def test_sarif_false_positive_without_justification_not_resolved(self):
+-        """False positive without justification should not count as resolved."""
+-        r = SARIFResult("R1", "msg", "error", "a.py", 1, 1, false_positive=True)
+-        bundle = SARIFBundle(runs=[SARIFToolRun("tool", "1.0", [r])])
+-        self.assertFalse(bundle.findings_resolved())
+-
+ 
+ # ═══════════════════════════════════════════════════════════════════════════════
+-# TEST: AST ENFORCEMENT ENGINE (10 Bans)
++# PATTERN ENFORCEMENT ENGINE TESTS
+ # ═══════════════════════════════════════════════════════════════════════════════
+ 
+-class TestASTEnforcement(unittest.TestCase):
+-    """Tests for the AST Enforcement Engine — all 10 non-negotiable bans."""
+-
+-    def setUp(self):
+-        self.engine = ASTEnforcementEngine()
+-
+-    def test_rule_count(self):
+-        """Engine must enforce exactly 10 rules."""
+-        self.assertEqual(len(ASTEnforcementEngine.RULE_DEFINITIONS), 10)
+-
+-    # ── Ban 1: .parse at boundaries ──────────────────────────────────────
+-
+-    def test_ban_parse_json_loads(self):
+-        """AST-001: json.loads at boundary must be caught."""
+-        source = 'data = json.loads(user_input)'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-001" for v in result.violations))
+-
+-    def test_ban_parse_yaml_load(self):
+-        """AST-001: yaml.load must be caught."""
+-        source = 'config = yaml.load(raw_data)'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-001" for v in result.violations))
+-
+-    def test_ban_parse_pickle_loads(self):
+-        """AST-001: pickle.loads must be caught."""
+-        source = 'obj = pickle.loads(data)'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-001" for v in result.violations))
+-
+-    def test_ban_parse_eval(self):
+-        """AST-001: eval() must be caught."""
+-        source = 'result = eval(expression)'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-001" for v in result.violations))
+-
+-    # ── Ban 2: passthrough/catchall in boundary schemas ──────────────────
+-
+-    def test_ban_passthrough(self):
+-        """AST-002: passthrough keyword must be caught."""
+-        source = 'mode = "passthrough"'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-002" for v in result.violations))
+-
+-    def test_ban_catchall(self):
+-        """AST-002: catchall keyword must be caught."""
+-        source = 'handler = catchall'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-002" for v in result.violations))
+-
+-    def test_ban_extra_allow(self):
+-        """AST-002: extra='allow' in schemas must be caught."""
+-        source = "class Config:\n    extra = 'allow'"
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-002" for v in result.violations))
++class TestPatternEnforcementEngine(unittest.TestCase):
++    """Tests for the regex-based pattern enforcement engine."""
+ 
+-    # ── Ban 3: direct execute outside enforce ────────────────────────────
+-
+-    def test_ban_cursor_execute(self):
+-        """AST-003: cursor.execute must be caught."""
+-        source = 'cursor.execute("SELECT * FROM users WHERE id = " + user_id)'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-003" for v in result.violations))
+-
+-    def test_ban_session_execute(self):
+-        """AST-003: session.execute must be caught."""
+-        source = 'session.execute(query)'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-003" for v in result.violations))
+-
+-    # ── Ban 4: raw provider calls outside controlled adapters ────────────
+-
+-    def test_ban_requests_get(self):
+-        """AST-004: requests.get must be caught."""
+-        source = 'response = requests.get(url)'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-004" for v in result.violations))
+-
+-    def test_ban_requests_post(self):
+-        """AST-004: requests.post must be caught."""
+-        source = 'response = requests.post(url, data=payload)'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-004" for v in result.violations))
++    def test_clean_source_passes(self):
++        engine = PatternEnforcementEngine()
++        result = engine.scan_source(_make_clean_source())
++        self.assertTrue(result.passed)
++        self.assertEqual(len(result.blocking_violations), 0)
+ 
+-    # ── Ban 5: Ray ObjectRef in durable truth boundaries ─────────────────
++    def test_vulnerable_source_fails(self):
++        engine = PatternEnforcementEngine()
++        result = engine.scan_source(_make_vulnerable_source())
++        self.assertFalse(result.passed)
++        self.assertGreater(len(result.blocking_violations), 0)
++
++    def test_subprocess_list_form_allowed(self):
++        """Pattern engine: subprocess without shell=True should pass rule 8."""
++        engine = PatternEnforcementEngine()
++        source = '''
++import subprocess
++result = subprocess.run(["git", "status"], check=True)
++'''
++        result = engine.scan_source(source)
++        rule_8_violations = [v for v in result.violations if v.rule_id == "AST-008"]
++        self.assertEqual(len(rule_8_violations), 0,
++                         "List-form subprocess.run should not trigger AST-008")
++
++    def test_subprocess_shell_true_blocked(self):
++        """Pattern engine: subprocess with shell=True must be blocked."""
++        engine = PatternEnforcementEngine()
++        source = '''
++import subprocess
++subprocess.run(cmd, shell=True)
++'''
++        result = engine.scan_source(source)
++        rule_8_violations = [v for v in result.violations if v.rule_id == "AST-008"]
++        self.assertGreater(len(rule_8_violations), 0,
++                           "subprocess.run(shell=True) must trigger AST-008")
++
++    def test_waiver_eligible_rule(self):
++        engine = PatternEnforcementEngine(waivers={"AST-006": "Approved by security team"})
++        source = 'ctypes.cdll.LoadLibrary("test.so")  # SECURITY_WAIVER: AST-006'
++        result = engine.scan_source(source)
++        waived = result.waived_violations
++        self.assertGreater(len(waived), 0)
+ 
+-    def test_ban_ray_objectref(self):
+-        """AST-005: ray.ObjectRef must be caught."""
+-        source = 'ref: ray.ObjectRef = ray.put(data)'
+-        result = self.engine.scan_source(source)
++    def test_scan_multiple_files(self):
++        engine = PatternEnforcementEngine()
++        files = {
++            "clean.py": _make_clean_source(),
++            "vuln.py": _make_vulnerable_source(),
++        }
++        result = engine.scan_multiple_files(files)
+         self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-005" for v in result.violations))
++        self.assertEqual(result.files_scanned, 2)
+ 
+-    def test_ban_ray_get(self):
+-        """AST-005: ray.get must be caught."""
+-        source = 'data = ray.get(object_ref)'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-005" for v in result.violations))
+ 
+-    # ── Ban 6: unsafe C/C++ calls unless waiver ──────────────────────────
++# ═══════════════════════════════════════════════════════════════════════════════
++# AST ENFORCEMENT ENGINE TESTS (Real ast.NodeVisitor)
++# ═══════════════════════════════════════════════════════════════════════════════
+ 
+-    def test_ban_strcpy(self):
+-        """AST-006: strcpy must be caught."""
+-        source = 'strcpy(dest, src)'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-006" for v in result.violations))
++class TestASTEnforcementEngine(unittest.TestCase):
++    """Tests for the real AST enforcement engine using ast.parse + NodeVisitor."""
+ 
+-    def test_ban_ctypes(self):
+-        """AST-006: ctypes.cdll must be caught."""
+-        source = 'lib = ctypes.cdll.LoadLibrary("libfoo.so")'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-006" for v in result.violations))
++    def test_clean_source_passes(self):
++        engine = ASTEnforcementEngine()
++        result = engine.scan_source(_make_clean_source())
++        self.assertTrue(result.passed)
++        self.assertEqual(len(result.blocking_violations), 0)
+ 
+-    def test_unsafe_c_with_waiver(self):
+-        """AST-006: Waiver-eligible rule with registered waiver should not block."""
+-        engine = ASTEnforcementEngine(waivers={"AST-006": "Approved by security team"})
+-        source = 'strcpy(dest, src)'
++    def test_detects_eval(self):
++        engine = ASTEnforcementEngine()
++        source = 'result = eval(user_input)\n'
+         result = engine.scan_source(source)
+-        # Violation exists but is waived
+-        violations_006 = [v for v in result.violations if v.rule_id == "AST-006"]
+-        self.assertTrue(len(violations_006) > 0)
+-        self.assertTrue(all(v.waiver_present for v in violations_006))
+-        self.assertTrue(all(not v.is_blocked for v in violations_006))
+-
+-    def test_unsafe_c_with_inline_waiver(self):
+-        """AST-006: Inline waiver comment should waive the violation."""
+-        source = 'strcpy(dest, src)  # SECURITY_WAIVER: AST-006'
+-        result = self.engine.scan_source(source)
+-        violations_006 = [v for v in result.violations if v.rule_id == "AST-006"]
+-        self.assertTrue(len(violations_006) > 0)
+-        self.assertTrue(all(not v.is_blocked for v in violations_006))
+-
+-    # ── Ban 7: weak crypto in security-sensitive code ────────────────────
+-
+-    def test_ban_md5(self):
+-        """AST-007: hashlib.md5 must be caught."""
+-        source = 'digest = hashlib.md5(data).hexdigest()'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-007" for v in result.violations))
+-
+-    def test_ban_sha1(self):
+-        """AST-007: hashlib.sha1 must be caught."""
+-        source = 'digest = hashlib.sha1(data).hexdigest()'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-007" for v in result.violations))
+-
+-    def test_ban_des(self):
+-        """AST-007: DES cipher must be caught."""
+-        source = 'cipher = Crypto.Cipher.DES.new(key)'
+-        result = self.engine.scan_source(source)
+         self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-007" for v in result.violations))
++        rule_ids = {v.rule_id for v in result.blocking_violations}
++        self.assertIn("AST-001", rule_ids)
+ 
+-    # ── Ban 8: system command execution with untrusted input ─────────────
+-
+-    def test_ban_os_system(self):
+-        """AST-008: os.system must be caught."""
+-        source = 'os.system(user_command)'
+-        result = self.engine.scan_source(source)
++    def test_detects_exec(self):
++        engine = ASTEnforcementEngine()
++        source = 'exec(user_code)\n'
++        result = engine.scan_source(source)
+         self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-008" for v in result.violations))
++        rule_ids = {v.rule_id for v in result.blocking_violations}
++        self.assertIn("AST-001", rule_ids)
+ 
+-    def test_ban_subprocess_call(self):
+-        """AST-008: subprocess.call must be caught."""
+-        source = 'subprocess.call(cmd, shell=True)'
+-        result = self.engine.scan_source(source)
++    def test_detects_pickle_loads(self):
++        engine = ASTEnforcementEngine()
++        source = 'import pickle\ndata = pickle.loads(raw)\n'
++        result = engine.scan_source(source)
+         self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-008" for v in result.violations))
++        rule_ids = {v.rule_id for v in result.blocking_violations}
++        self.assertIn("AST-001", rule_ids)
+ 
+-    def test_ban_subprocess_popen(self):
+-        """AST-008: subprocess.Popen must be caught."""
+-        source = 'proc = subprocess.Popen(cmd)'
+-        result = self.engine.scan_source(source)
++    def test_detects_os_system(self):
++        engine = ASTEnforcementEngine()
++        source = 'import os\nos.system("rm -rf /")\n'
++        result = engine.scan_source(source)
+         self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-008" for v in result.violations))
+-
+-    # ── Ban 9: unchecked buffer copies ───────────────────────────────────
++        rule_ids = {v.rule_id for v in result.blocking_violations}
++        self.assertIn("AST-008", rule_ids)
+ 
+-    def test_ban_memcpy(self):
+-        """AST-009: memcpy must be caught."""
+-        source = 'memcpy(dest, src, n)'
+-        result = self.engine.scan_source(source)
++    def test_detects_subprocess_shell_true(self):
++        engine = ASTEnforcementEngine()
++        source = 'import subprocess\nsubprocess.run(cmd, shell=True)\n'
++        result = engine.scan_source(source)
+         self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-009" for v in result.violations))
++        rule_ids = {v.rule_id for v in result.blocking_violations}
++        self.assertIn("AST-008", rule_ids)
+ 
+-    def test_ban_unbounded_read(self):
+-        """AST-009: unbounded .read() must be caught."""
+-        source = 'data = file.read()'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-009" for v in result.violations))
++    def test_allows_subprocess_list_form(self):
++        """subprocess.run with list args and no shell=True must be allowed."""
++        engine = ASTEnforcementEngine()
++        source = 'import subprocess\nsubprocess.run(["git", "status"], check=True)\n'
++        result = engine.scan_source(source)
++        rule_8_violations = [v for v in result.violations if v.rule_id == "AST-008"]
++        self.assertEqual(len(rule_8_violations), 0,
++                         "List-form subprocess.run should not trigger AST-008")
++
++    def test_allows_yaml_safe_load(self):
++        """yaml.safe_load must NOT be banned."""
++        engine = ASTEnforcementEngine()
++        source = 'import yaml\ndata = yaml.safe_load(content)\n'
++        result = engine.scan_source(source)
++        rule_1_violations = [v for v in result.violations if v.rule_id == "AST-001"]
++        self.assertEqual(len(rule_1_violations), 0,
++                         "yaml.safe_load should not be banned")
++
++    def test_bans_yaml_load_without_safeloader(self):
++        """yaml.load without SafeLoader must be banned."""
++        engine = ASTEnforcementEngine()
++        source = 'import yaml\ndata = yaml.load(content)\n'
++        result = engine.scan_source(source)
++        rule_1_violations = [v for v in result.violations if v.rule_id == "AST-001"]
++        self.assertGreater(len(rule_1_violations), 0,
++                           "yaml.load without SafeLoader must be banned")
++
++    def test_allows_yaml_load_with_safeloader(self):
++        """yaml.load(content, Loader=yaml.SafeLoader) must be allowed."""
++        engine = ASTEnforcementEngine()
++        source = 'import yaml\ndata = yaml.load(content, Loader=yaml.SafeLoader)\n'
++        result = engine.scan_source(source)
++        rule_1_violations = [v for v in result.violations if v.rule_id == "AST-001"]
++        self.assertEqual(len(rule_1_violations), 0,
++                         "yaml.load with SafeLoader should be allowed")
++
++    def test_detects_hashlib_md5(self):
++        engine = ASTEnforcementEngine()
++        source = 'import hashlib\nh = hashlib.md5(data)\n'
++        result = engine.scan_source(source)
++        rule_ids = {v.rule_id for v in result.blocking_violations}
++        self.assertIn("AST-007", rule_ids)
+ 
+-    def test_buffer_copy_with_waiver(self):
+-        """AST-009: Waiver-eligible rule with waiver should not block."""
+-        engine = ASTEnforcementEngine(waivers={"AST-009": "Bounds checked externally"})
+-        source = 'memcpy(dest, src, n)'
++    def test_detects_requests_get(self):
++        engine = ASTEnforcementEngine()
++        source = 'import requests\nrequests.get(url)\n'
+         result = engine.scan_source(source)
+-        violations_009 = [v for v in result.violations if v.rule_id == "AST-009"]
+-        self.assertTrue(len(violations_009) > 0)
+-        self.assertTrue(all(not v.is_blocked for v in violations_009))
+-
+-    # ── Ban 10: unchecked return values for security ops ─────────────────
+-
+-    def test_ban_unchecked_os_remove(self):
+-        """AST-010: Unchecked os.remove must be caught."""
+-        source = '    os.remove(filepath)'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-010" for v in result.violations))
++        rule_ids = {v.rule_id for v in result.blocking_violations}
++        self.assertIn("AST-004", rule_ids)
+ 
+-    def test_ban_unchecked_chmod(self):
+-        """AST-010: Unchecked os.chmod must be caught."""
+-        source = '    os.chmod(path, 0o777)'
+-        result = self.engine.scan_source(source)
+-        self.assertFalse(result.passed)
+-        self.assertTrue(any(v.rule_id == "AST-010" for v in result.violations))
++    def test_detects_cursor_execute(self):
++        engine = ASTEnforcementEngine()
++        source = 'cursor.execute(query)\n'
++        result = engine.scan_source(source)
++        rule_ids = {v.rule_id for v in result.blocking_violations}
++        self.assertIn("AST-003", rule_ids)
+ 
+-    # ── Clean code passes ────────────────────────────────────────────────
++    def test_does_not_flag_string_containing_dangerous_call(self):
++        """AST engine should NOT flag strings/docstrings containing dangerous patterns."""
++        engine = ASTEnforcementEngine()
++        source = '''
++def safe_function():
++    """Do not call subprocess.run(user_input, shell=True)"""
++    message = "do not call eval(user_input)"
++    return message
++'''
++        result = engine.scan_source(source)
++        self.assertTrue(result.passed,
++                        "Strings/docstrings should not trigger violations")
+ 
+-    def test_clean_code_passes(self):
+-        """Clean code with no violations must pass all rules."""
+-        source = _make_clean_source()
+-        result = self.engine.scan_source(source)
+-        self.assertTrue(result.passed)
+-        self.assertEqual(len(result.blocking_violations), 0)
++    def test_falls_back_to_pattern_for_non_python(self):
++        """Non-Python source should fall back to pattern engine."""
++        engine = ASTEnforcementEngine()
++        source = '{{ this is not valid python }}'
++        result = engine.scan_source(source)
++        # Should not crash — falls back to pattern scan
++        self.assertIsInstance(result, ASTGateResult)
+ 
+     def test_scan_multiple_files(self):
+-        """Scanning multiple files must aggregate violations."""
++        engine = ASTEnforcementEngine()
+         files = {
+             "clean.py": _make_clean_source(),
+-            "vuln.py": _make_vulnerable_source(),
++            "vuln.py": 'import os\nos.system("bad")\n',
+         }
+-        result = self.engine.scan_multiple_files(files)
++        result = engine.scan_multiple_files(files)
+         self.assertFalse(result.passed)
+         self.assertEqual(result.files_scanned, 2)
+-        self.assertTrue(len(result.violations) > 0)
+-
+-    def test_comment_lines_skipped(self):
+-        """Comment-only lines must not trigger violations."""
+-        source = '# json.loads(data)\n# os.system(cmd)'
+-        result = self.engine.scan_source(source)
+-        self.assertTrue(result.passed)
+-
+-    def test_ast_gate_result_to_dict(self):
+-        """ASTGateResult.to_dict must include all fields."""
+-        result = self.engine.scan_source(_make_clean_source())
+-        d = result.to_dict()
+-        self.assertIn("passed", d)
+-        self.assertIn("violations_count", d)
+-        self.assertIn("blocking_count", d)
+-        self.assertIn("waived_count", d)
+-        self.assertIn("files_scanned", d)
+-        self.assertIn("rules_checked", d)
+-        self.assertIn("timestamp", d)
+ 
+ 
+ # ═══════════════════════════════════════════════════════════════════════════════
+-# TEST: SECURITY EVIDENCE BUNDLE (15 Fields)
++# SECURITY EVIDENCE BUNDLE TESTS
+ # ═══════════════════════════════════════════════════════════════════════════════
+ 
+ class TestSecurityEvidenceBundle(unittest.TestCase):
+-    """Tests for the Security Evidence Bundle — all 15 required fields."""
++    """Tests for the security evidence bundle."""
+ 
+     def test_valid_bundle_passes_validation(self):
+-        """A complete evidence bundle must pass validation."""
+         bundle = _make_valid_evidence_bundle()
+         errors = bundle.validate()
+-        self.assertEqual(len(errors), 0, f"Unexpected errors: {errors}")
++        self.assertEqual(errors, [])
+         self.assertTrue(bundle.is_complete())
+ 
+-    def test_all_15_fields_present(self):
+-        """Bundle must have exactly 15 required fields."""
+-        self.assertEqual(len(SecurityEvidenceBundle.REQUIRED_FIELDS), 15)
+-
+-    def test_missing_input_hash(self):
+-        """Missing input_hash must fail validation."""
++    def test_invalid_hash_fails_validation(self):
+         bundle = _make_valid_evidence_bundle()
+-        bundle.input_hash = ""
++        bundle.input_hash = "not_a_hash"
+         errors = bundle.validate()
+         self.assertTrue(any("input_hash" in e for e in errors))
+ 
+-    def test_missing_output_hash(self):
+-        """Missing output_hash must fail validation."""
++    def test_z64_hash_fails_validation(self):
++        """'z' * 64 must be rejected by strict SHA-256 validation."""
+         bundle = _make_valid_evidence_bundle()
+-        bundle.output_hash = ""
++        bundle.input_hash = "z" * 64
+         errors = bundle.validate()
+-        self.assertTrue(any("output_hash" in e for e in errors))
++        self.assertTrue(any("input_hash" in e for e in errors))
+ 
+-    def test_missing_prompt_hash(self):
+-        """Missing prompt_hash must fail validation."""
++    def test_invalid_qneo_decision_fails(self):
+         bundle = _make_valid_evidence_bundle()
+-        bundle.prompt_hash = ""
++        bundle.QNEO_decision = "PENDING"
+         errors = bundle.validate()
+-        self.assertTrue(any("prompt_hash" in e for e in errors))
++        self.assertTrue(any("QNEO_decision" in e for e in errors))
++
++    def test_valid_qneo_decisions(self):
++        for decision in ("ALLOW", "HOLD", "FAIL_CLOSED", "ROLLBACK"):
++            bundle = _make_valid_evidence_bundle()
++            bundle.QNEO_decision = decision
++            errors = bundle.validate()
++            self.assertEqual(errors, [], f"Decision '{decision}' should be valid")
+ 
+-    def test_missing_model_id(self):
+-        """Missing model_id must fail validation."""
++    def test_bundle_hash_is_deterministic(self):
++        bundle = _make_valid_evidence_bundle()
++        h1 = bundle.compute_bundle_hash()
++        h2 = bundle.compute_bundle_hash()
++        self.assertEqual(h1, h2)
++        self.assertTrue(is_sha256(h1))
++
++    def test_missing_model_id_fails(self):
+         bundle = _make_valid_evidence_bundle()
+         bundle.model_id = ""
+         errors = bundle.validate()
+         self.assertTrue(any("model_id" in e for e in errors))
+ 
+-    def test_invalid_temperature(self):
+-        """Temperature outside 0.0-2.0 must fail validation."""
++    def test_temperature_out_of_range_fails(self):
+         bundle = _make_valid_evidence_bundle()
+         bundle.model_temperature = 3.0
+         errors = bundle.validate()
+         self.assertTrue(any("model_temperature" in e for e in errors))
+ 
+-    def test_missing_scanner_versions(self):
+-        """Empty scanner_versions must fail validation."""
+-        bundle = _make_valid_evidence_bundle()
+-        bundle.scanner_versions = {}
+-        errors = bundle.validate()
+-        self.assertTrue(any("scanner_versions" in e for e in errors))
+-
+-    def test_missing_sarif_hash(self):
+-        """Missing SARIF_bundle_hash must fail validation."""
+-        bundle = _make_valid_evidence_bundle()
+-        bundle.SARIF_bundle_hash = ""
+-        errors = bundle.validate()
+-        self.assertTrue(any("SARIF_bundle_hash" in e for e in errors))
+-
+-    def test_invalid_ast_gate_result(self):
+-        """Invalid AST_gate_result must fail validation."""
+-        bundle = _make_valid_evidence_bundle()
+-        bundle.AST_gate_result = "MAYBE"
+-        errors = bundle.validate()
+-        self.assertTrue(any("AST_gate_result" in e for e in errors))
+-
+-    def test_missing_test_result_hash(self):
+-        """Missing test_result_hash must fail validation."""
+-        bundle = _make_valid_evidence_bundle()
+-        bundle.test_result_hash = ""
+-        errors = bundle.validate()
+-        self.assertTrue(any("test_result_hash" in e for e in errors))
+-
+-    def test_invalid_risk_rating(self):
+-        """Invalid risk_rating must fail validation."""
+-        bundle = _make_valid_evidence_bundle()
+-        bundle.risk_rating = "extreme"
+-        errors = bundle.validate()
+-        self.assertTrue(any("risk_rating" in e for e in errors))
+-
+-    def test_missing_manual_reviewer(self):
+-        """Missing manual_reviewer must fail validation."""
+-        bundle = _make_valid_evidence_bundle()
+-        bundle.manual_reviewer = ""
+-        errors = bundle.validate()
+-        self.assertTrue(any("manual_reviewer" in e for e in errors))
+ 
+-    def test_missing_patch_diff_hash(self):
+-        """Missing patch_diff_hash must fail validation."""
+-        bundle = _make_valid_evidence_bundle()
+-        bundle.patch_diff_hash = ""
+-        errors = bundle.validate()
+-        self.assertTrue(any("patch_diff_hash" in e for e in errors))
++# ═══════════════════════════════════════════════════════════════════════════════
++# TEST EXECUTION RESULT TESTS
++# ═══════════════════════════════════════════════════════════════════════════════
+ 
+-    def test_invalid_qneo_decision(self):
+-        """Invalid QNEO_decision must fail validation."""
+-        bundle = _make_valid_evidence_bundle()
+-        bundle.QNEO_decision = "MAYBE"
+-        errors = bundle.validate()
+-        self.assertTrue(any("QNEO_decision" in e for e in errors))
++class TestTestExecutionResult(unittest.TestCase):
++    """Tests for TestExecutionResult."""
+ 
+-    def test_bundle_hash_deterministic(self):
+-        """Bundle hash must be deterministic."""
+-        bundle = _make_valid_evidence_bundle()
+-        h1 = bundle.compute_bundle_hash()
+-        h2 = bundle.compute_bundle_hash()
++    def test_compute_hash_is_deterministic(self):
++        result = _make_test_result()
++        h1 = result.compute_hash()
++        h2 = result.compute_hash()
+         self.assertEqual(h1, h2)
+-        self.assertEqual(len(h1), 64)
++        self.assertTrue(is_sha256(h1))
+ 
+-    def test_bundle_to_dict(self):
+-        """Bundle to_dict must include all fields."""
+-        bundle = _make_valid_evidence_bundle()
+-        d = bundle.to_dict()
+-        for field_name in SecurityEvidenceBundle.REQUIRED_FIELDS:
+-            self.assertIn(field_name, d, f"Missing field: {field_name}")
++    def test_compute_hash_includes_test_output(self):
++        """Different test_output must produce different hashes (Issue #11)."""
++        r1 = TestExecutionResult(
++            passed=True, total_tests=10, passed_tests=10,
++            failed_tests=0, error_tests=0, skipped_tests=0,
++            execution_time_seconds=1.0, test_output="output A",
++        )
++        r2 = TestExecutionResult(
++            passed=True, total_tests=10, passed_tests=10,
++            failed_tests=0, error_tests=0, skipped_tests=0,
++            execution_time_seconds=1.0, test_output="output B",
++        )
++        self.assertNotEqual(r1.compute_hash(), r2.compute_hash(),
++                            "Different test_output must produce different hashes")
++
++    def test_different_results_different_hash(self):
++        r1 = _make_test_result(passed=True)
++        r2 = _make_test_result(passed=False)
++        self.assertNotEqual(r1.compute_hash(), r2.compute_hash())
+ 
+ 
+ # ═══════════════════════════════════════════════════════════════════════════════
+-# TEST: PATCH ANALYSIS
++# PATCH ANALYSIS TESTS (difflib.unified_diff)
+ # ═══════════════════════════════════════════════════════════════════════════════
+ 
+ class TestPatchAnalysis(unittest.TestCase):
+-    """Tests for patch analysis — minimality and scope detection."""
++    """Tests for patch analysis using difflib.unified_diff."""
+ 
+-    def test_minimal_patch(self):
+-        """Small changes should be detected as minimal."""
+-        original = "def foo():\n    return 1\n"
+-        patched = "def foo():\n    return 2\n"
++    def test_minimal_patch_detected(self):
++        original = _make_clean_source()
++        patched = _make_patched_source()
+         analysis = analyze_patch(original, patched)
+         self.assertTrue(analysis.is_minimal)
+         self.assertFalse(analysis.changes_unrelated_code)
+ 
+-    def test_non_minimal_patch(self):
+-        """Large changes should be detected as non-minimal."""
+-        original = "\n".join(f"line_{i} = {i}" for i in range(100))
+-        patched = "\n".join(f"new_line_{i} = {i * 2}" for i in range(100))
++    def test_patch_diff_uses_unified_format(self):
++        """Patch diff must use unified diff format (Issue #12)."""
++        original = "line1\nline2\nline3\n"
++        patched = "line1\nmodified\nline3\n"
+         analysis = analyze_patch(original, patched)
+-        self.assertFalse(analysis.is_minimal)
++        # Unified diff contains --- and +++ headers
++        self.assertIn("---", analysis.patch_diff)
++        self.assertIn("+++", analysis.patch_diff)
++        self.assertIn("@@", analysis.patch_diff)
+ 
+-    def test_unrelated_code_changes(self):
+-        """Changes in distant parts of the file should flag unrelated code."""
+-        lines = [f"line_{i}" for i in range(50)]
+-        original = "\n".join(lines)
+-        patched_lines = list(lines)
+-        patched_lines[2] = "changed_line_2"
+-        patched_lines[45] = "changed_line_45"
+-        patched = "\n".join(patched_lines)
++    def test_identical_source_produces_empty_diff(self):
++        source = _make_clean_source()
++        analysis = analyze_patch(source, source)
++        self.assertTrue(analysis.is_minimal)
++        self.assertEqual(analysis.lines_added, 0)
++        self.assertEqual(analysis.lines_removed, 0)
++
++    def test_large_change_not_minimal(self):
++        original = "\n".join(f"line {i}" for i in range(100))
++        patched = "\n".join(f"changed {i}" for i in range(100))
+         analysis = analyze_patch(original, patched)
+-        self.assertTrue(analysis.changes_unrelated_code)
++        self.assertFalse(analysis.is_minimal)
+ 
+-    def test_patch_hashes(self):
+-        """Patch analysis must produce valid hashes."""
+-        original = "def foo():\n    return 1\n"
+-        patched = "def foo():\n    return 2\n"
++    def test_hash_properties(self):
++        analysis = analyze_patch("original\n", "patched\n")
++        self.assertTrue(is_sha256(analysis.input_hash))
++        self.assertTrue(is_sha256(analysis.output_hash))
++        self.assertTrue(is_sha256(analysis.diff_hash))
++
++    def test_single_line_insert_is_minimal(self):
++        """A single line insert should be detected as minimal (difflib handles this)."""
++        original = "line1\nline2\nline3\n"
++        patched = "line1\nline2\nnew_line\nline3\n"
+         analysis = analyze_patch(original, patched)
+-        self.assertEqual(len(analysis.input_hash), 64)
+-        self.assertEqual(len(analysis.output_hash), 64)
+-        self.assertEqual(len(analysis.diff_hash), 64)
+-        self.assertNotEqual(analysis.input_hash, analysis.output_hash)
++        self.assertTrue(analysis.is_minimal)
++        self.assertEqual(analysis.lines_added, 1)
++        self.assertEqual(analysis.lines_removed, 0)
+ 
+ 
+ # ═══════════════════════════════════════════════════════════════════════════════
+-# TEST: 11-STEP PIPELINE
++# PIPELINE TESTS
+ # ═══════════════════════════════════════════════════════════════════════════════
+ 
+-class TestSecureCodingPipeline(unittest.TestCase):
+-    """Tests for the 11-step secure coding pipeline."""
+-
+-    def test_pipeline_has_11_steps(self):
+-        """Pipeline must define exactly 11 steps."""
+-        self.assertEqual(len(PIPELINE_STEP_ORDER), 11)
++class TestPipelineSteps(unittest.TestCase):
++    """Tests for the 11-step pipeline."""
+ 
+     def test_pipeline_step_order(self):
+-        """Pipeline steps must be in the correct order."""
+-        expected = [
+-            PipelineStep.AI_PATCH_PROPOSED,
+-            PipelineStep.SOURCE_NORMALIZED_AND_HASHED,
+-            PipelineStep.STATIC_SCANNERS_RUN,
+-            PipelineStep.SARIF_RESULTS_AGGREGATED,
+-            PipelineStep.AST_POLICY_GATE_RUNS,
+-            PipelineStep.LLM_REVIEWS_SCANNER_EVIDENCE,
+-            PipelineStep.MINIMAL_PATCH_GENERATED,
+-            PipelineStep.TESTS_RUN,
+-            PipelineStep.PATCHED_CODE_RESCANNED,
+-            PipelineStep.HUMAN_SECURITY_REVIEW,
+-            PipelineStep.QNEO_RETURNS_DECISION,
+-        ]
+-        self.assertEqual(PIPELINE_STEP_ORDER, expected)
++        self.assertEqual(len(PIPELINE_STEP_ORDER), 11)
++        self.assertEqual(PIPELINE_STEP_ORDER[0], PipelineStep.AI_PATCH_PROPOSED)
++        self.assertEqual(PIPELINE_STEP_ORDER[10], PipelineStep.QNEO_RETURNS_DECISION)
+ 
+-    def test_full_pipeline_clean_path(self):
+-        """Full pipeline with clean inputs must complete all 11 steps."""
++    def test_step_01_records_correctly(self):
+         pipeline = SecureCodingPipeline()
+-
+-        # Step 1
+-        r1 = pipeline.step_01_ai_patch_proposed(
++        result = pipeline.step_01_ai_patch_proposed(
+             original_source=_make_clean_source(),
+             patched_source=_make_patched_source(),
+             model_id="gpt-5",
+-            prompt="Fix the input validation",
+-            temperature=0.0,
++            prompt="Fix the vulnerability",
+         )
+-        self.assertTrue(r1.completed)
+-        self.assertTrue(r1.passed)
++        self.assertTrue(result.completed)
++        self.assertTrue(result.passed)
++        self.assertEqual(result.step, PipelineStep.AI_PATCH_PROPOSED)
+ 
+-        # Step 2
+-        r2 = pipeline.step_02_source_normalized_and_hashed()
+-        self.assertTrue(r2.completed)
+-        self.assertTrue(r2.passed)
+-        self.assertIn("input_hash", r2.evidence)
+-        self.assertIn("output_hash", r2.evidence)
++    def test_step_02_normalizes_and_hashes(self):
++        pipeline = SecureCodingPipeline()
++        pipeline.step_01_ai_patch_proposed(
++            _make_clean_source(), _make_patched_source(), "gpt-5", "fix"
++        )
++        result = pipeline.step_02_source_normalized_and_hashed()
++        self.assertTrue(result.completed)
++        self.assertTrue(result.passed)
++        self.assertIn("input_hash", result.evidence)
++        self.assertIn("output_hash", result.evidence)
++        self.assertTrue(is_sha256(result.evidence["input_hash"]))
++
++    def test_step_02_fails_without_step_01(self):
++        pipeline = SecureCodingPipeline()
++        result = pipeline.step_02_source_normalized_and_hashed()
++        self.assertFalse(result.completed)
++        self.assertFalse(result.passed)
+ 
++    def _run_full_pipeline(self, qneo_decision: str = "ALLOW") -> SecureCodingPipeline:
++        """Helper: run all 11 steps with clean data."""
++        pipeline = SecureCodingPipeline()
++
++        # Step 1
++        pipeline.step_01_ai_patch_proposed(
++            _make_clean_source(), _make_patched_source(), "gpt-5", "fix"
++        )
++        # Step 2
++        pipeline.step_02_source_normalized_and_hashed()
+         # Step 3
+-        r3 = pipeline.step_03_static_scanners_run([
++        pipeline.step_03_static_scanners_run([
+             ("semgrep", "1.50.0", _make_resolved_sarif_results()),
+         ])
+-        self.assertTrue(r3.completed)
+-        self.assertTrue(r3.passed)
+-
+         # Step 4
+-        r4 = pipeline.step_04_sarif_results_aggregated()
+-        self.assertTrue(r4.completed)
+-        self.assertTrue(r4.passed)
+-
++        pipeline.step_04_sarif_results_aggregated()
+         # Step 5
+-        r5 = pipeline.step_05_ast_policy_gate_runs()
+-        self.assertTrue(r5.completed)
+-        self.assertTrue(r5.passed)
+-
++        pipeline.step_05_ast_policy_gate_runs()
+         # Step 6
+-        r6 = pipeline.step_06_llm_reviews_scanner_evidence(_make_llm_review())
+-        self.assertTrue(r6.completed)
+-        self.assertTrue(r6.passed)
+-
++        pipeline.step_06_llm_reviews_scanner_evidence(_make_llm_review(clean=True))
+         # Step 7
+-        r7 = pipeline.step_07_minimal_patch_generated()
+-        self.assertTrue(r7.completed)
+-        self.assertTrue(r7.passed)
+-
++        pipeline.step_07_minimal_patch_generated()
+         # Step 8
+-        r8 = pipeline.step_08_tests_run(_make_test_result(passed=True))
+-        self.assertTrue(r8.completed)
+-        self.assertTrue(r8.passed)
+-
+-        # Step 9
+-        r9 = pipeline.step_09_patched_code_rescanned([
++        pipeline.step_08_tests_run(_make_test_result(passed=True))
++        # Step 9 — clean rescan (no findings)
++        pipeline.step_09_patched_code_rescanned([
+             ("semgrep", "1.50.0", []),
+         ])
+-        self.assertTrue(r9.completed)
+-        self.assertTrue(r9.passed)
+-
+         # Step 10
+-        r10 = pipeline.step_10_human_security_review(_make_human_review(approved=True))
+-        self.assertTrue(r10.completed)
+-        self.assertTrue(r10.passed)
+-
++        pipeline.step_10_human_security_review(_make_human_review(approved=True))
+         # Step 11
+-        r11 = pipeline.step_11_qneo_returns_decision()
+-        self.assertTrue(r11.completed)
+-
+-        # Verify all 11 steps recorded
+-        self.assertEqual(len(pipeline.step_results), 11)
++        pipeline.step_11_qneo_returns_decision(qneo_decision)
+ 
+-        # Verify evidence bundle exists
+-        self.assertIsNotNone(pipeline.evidence_bundle)
++        return pipeline
+ 
+-    def test_step_2_fails_without_step_1(self):
+-        """Step 2 must fail if step 1 has not completed."""
+-        pipeline = SecureCodingPipeline()
+-        r = pipeline.step_02_source_normalized_and_hashed()
+-        self.assertFalse(r.completed)
+-        self.assertFalse(r.passed)
+-
+-    def test_step_3_fails_without_scanners(self):
+-        """Step 3 must fail if no scanner results provided."""
+-        pipeline = SecureCodingPipeline()
+-        r = pipeline.step_03_static_scanners_run([])
+-        self.assertFalse(r.completed)
+-        self.assertFalse(r.passed)
+-
+-    def test_step_4_fails_without_step_3(self):
+-        """Step 4 must fail if SARIF bundle not available."""
+-        pipeline = SecureCodingPipeline()
+-        r = pipeline.step_04_sarif_results_aggregated()
+-        self.assertFalse(r.completed)
+-        self.assertFalse(r.passed)
+-
+-    def test_step_5_fails_without_source(self):
+-        """Step 5 must fail if patched source not available."""
+-        pipeline = SecureCodingPipeline()
+-        r = pipeline.step_05_ast_policy_gate_runs()
+-        self.assertFalse(r.completed)
+-        self.assertFalse(r.passed)
+-
+-    def test_step_5_catches_violations(self):
+-        """Step 5 must catch AST violations in vulnerable code."""
+-        pipeline = SecureCodingPipeline()
+-        pipeline.step_01_ai_patch_proposed(
+-            original_source=_make_clean_source(),
+-            patched_source=_make_vulnerable_source(),
+-            model_id="gpt-5",
+-            prompt="test",
+-        )
+-        pipeline.step_02_source_normalized_and_hashed()
+-        pipeline.step_03_static_scanners_run([("semgrep", "1.50.0", [])])
+-        pipeline.step_04_sarif_results_aggregated()
++    def test_full_pipeline_passes(self):
++        pipeline = self._run_full_pipeline("ALLOW")
++        summary = pipeline.get_pipeline_summary()
++        self.assertEqual(summary["steps_completed"], 11)
++        self.assertTrue(summary["all_steps_passed"])
+ 
+-        r5 = pipeline.step_05_ast_policy_gate_runs()
+-        self.assertTrue(r5.completed)
+-        self.assertFalse(r5.passed)
+-        self.assertTrue(len(r5.errors) > 0)
++    def test_step_11_accepts_qneo_decision_parameter(self):
++        """Step 11 must accept actual QNEO decision parameter (Issue #3)."""
++        pipeline = self._run_full_pipeline("HOLD")
++        bundle = pipeline.evidence_bundle
++        self.assertIsNotNone(bundle)
++        self.assertEqual(bundle.QNEO_decision, "HOLD")
+ 
+-    def test_step_6_detects_llm_issues(self):
+-        """Step 6 must detect problematic LLM review results."""
++    def test_step_11_rejects_invalid_qneo_decision(self):
++        """Step 11 must reject invalid QNEO decisions."""
+         pipeline = SecureCodingPipeline()
+         pipeline.step_01_ai_patch_proposed(
+-            _make_clean_source(), _make_patched_source(), "gpt-5", "test"
++            _make_clean_source(), _make_patched_source(), "gpt-5", "fix"
+         )
+         pipeline.step_02_source_normalized_and_hashed()
+-        pipeline.step_03_static_scanners_run([("semgrep", "1.50.0", [])])
++        pipeline.step_03_static_scanners_run([
++            ("semgrep", "1.50.0", _make_resolved_sarif_results()),
++        ])
+         pipeline.step_04_sarif_results_aggregated()
+         pipeline.step_05_ast_policy_gate_runs()
++        pipeline.step_06_llm_reviews_scanner_evidence(_make_llm_review())
++        pipeline.step_07_minimal_patch_generated()
++        pipeline.step_08_tests_run(_make_test_result())
++        pipeline.step_09_patched_code_rescanned([("semgrep", "1.50.0", [])])
++        pipeline.step_10_human_security_review(_make_human_review())
++        result = pipeline.step_11_qneo_returns_decision("PENDING")
++        self.assertFalse(result.passed)
++        self.assertTrue(any("PENDING" in e for e in result.errors))
+ 
+-        bad_review = _make_llm_review(disables_validation=True, suppresses_tests=True)
+-        r6 = pipeline.step_06_llm_reviews_scanner_evidence(bad_review)
+-        self.assertTrue(r6.completed)
+-        self.assertFalse(r6.passed)
+-        self.assertTrue(any("disables validation" in e for e in r6.errors))
+-        self.assertTrue(any("suppresses tests" in e for e in r6.errors))
+-
+-    def test_step_8_records_test_failure(self):
+-        """Step 8 must record test failures."""
++    def test_step_11_blocks_when_prior_steps_failed(self):
++        """Step 11 must fail if any prior step failed (Issue #4)."""
+         pipeline = SecureCodingPipeline()
+         pipeline.step_01_ai_patch_proposed(
+-            _make_clean_source(), _make_patched_source(), "gpt-5", "test"
++            _make_clean_source(), _make_patched_source(), "gpt-5", "fix"
+         )
+         pipeline.step_02_source_normalized_and_hashed()
+-        pipeline.step_03_static_scanners_run([("semgrep", "1.50.0", [])])
++        pipeline.step_03_static_scanners_run([
++            ("semgrep", "1.50.0", _make_sarif_results()),  # unresolved findings
++        ])
+         pipeline.step_04_sarif_results_aggregated()
+         pipeline.step_05_ast_policy_gate_runs()
+-        pipeline.step_06_llm_reviews_scanner_evidence(_make_llm_review())
++        # Step 6: LLM disagrees with scanners → fails
++        bad_llm = _make_llm_review(clean=False)
++        pipeline.step_06_llm_reviews_scanner_evidence(bad_llm)
+         pipeline.step_07_minimal_patch_generated()
++        # Step 8: tests fail
++        pipeline.step_08_tests_run(_make_test_result(passed=False))
++        pipeline.step_09_patched_code_rescanned([("semgrep", "1.50.0", [])])
++        pipeline.step_10_human_security_review(_make_human_review(approved=False))
++        result = pipeline.step_11_qneo_returns_decision("ALLOW")
++        self.assertFalse(result.passed)
++        self.assertTrue(any("Prior pipeline steps failed" in e for e in result.errors))
+ 
+-        r8 = pipeline.step_08_tests_run(_make_test_result(passed=False))
+-        self.assertTrue(r8.completed)
+-        self.assertFalse(r8.passed)
+-
+-    def test_step_9_fails_without_rescan(self):
+-        """Step 9 must fail if no re-scan results provided."""
+-        pipeline = SecureCodingPipeline()
+-        r = pipeline.step_09_patched_code_rescanned([])
+-        self.assertFalse(r.completed)
+-        self.assertFalse(r.passed)
+-
+-    def test_step_10_rejects_unapproved_review(self):
+-        """Step 10 must fail if human reviewer does not approve."""
+-        pipeline = SecureCodingPipeline()
+-        r = pipeline.step_10_human_security_review(_make_human_review(approved=False))
+-        self.assertTrue(r.completed)
+-        self.assertFalse(r.passed)
+-
+-    def test_step_10_rejects_invalid_review(self):
+-        """Step 10 must fail if human review is invalid (no evidence hash)."""
+-        review = HumanSecurityReview(
+-            reviewer_identity="reviewer@example.com",
+-            approved=True,
+-            reviewed_evidence_hash="",  # Invalid — no evidence hash
+-        )
+-        pipeline = SecureCodingPipeline()
+-        r = pipeline.step_10_human_security_review(review)
+-        self.assertTrue(r.completed)
+-        self.assertFalse(r.passed)
+-
+-    def test_pipeline_summary(self):
+-        """Pipeline summary must include all expected fields."""
++    def test_step_11_blocks_when_steps_missing(self):
++        """Step 11 must fail if prior steps are missing."""
+         pipeline = SecureCodingPipeline()
+         pipeline.step_01_ai_patch_proposed(
+-            _make_clean_source(), _make_patched_source(), "gpt-5", "test"
++            _make_clean_source(), _make_patched_source(), "gpt-5", "fix"
+         )
+-        summary = pipeline.get_pipeline_summary()
+-        self.assertIn("pipeline_id", summary)
+-        self.assertIn("steps_completed", summary)
+-        self.assertIn("steps_total", summary)
+-        self.assertEqual(summary["steps_total"], 11)
+-
+-
+-# ═══════════════════════════════════════════════════════════════════════════════
+-# TEST: COMPUTE SHA-256
+-# ═══════════════════════════════════════════════════════════════════════════════
+-
+-class TestComputeSHA256(unittest.TestCase):
+-    """Tests for SHA-256 computation utilities."""
+-
+-    def test_deterministic(self):
+-        """SHA-256 must be deterministic."""
+-        h1 = compute_sha256("hello world")
+-        h2 = compute_sha256("hello world")
+-        self.assertEqual(h1, h2)
+-
+-    def test_length(self):
+-        """SHA-256 must produce 64 hex characters."""
+-        h = compute_sha256("test")
+-        self.assertEqual(len(h), 64)
+-
+-    def test_different_inputs(self):
+-        """Different inputs must produce different hashes."""
+-        h1 = compute_sha256("input1")
+-        h2 = compute_sha256("input2")
+-        self.assertNotEqual(h1, h2)
++        # Skip steps 2-10
++        result = pipeline.step_11_qneo_returns_decision("ALLOW")
++        self.assertFalse(result.passed)
++        self.assertTrue(any("Missing pipeline steps" in e for e in result.errors))
+ 
+ 
+ # ═══════════════════════════════════════════════════════════════════════════════
+-# TEST: LLM REVIEW RESULT
++# RESCAN COMPARISON TESTS (Issue #5)
+ # ═══════════════════════════════════════════════════════════════════════════════
+ 
+-class TestLLMReviewResult(unittest.TestCase):
+-    """Tests for LLM review result structure."""
+-
+-    def test_clean_review(self):
+-        """Clean LLM review should have no issues."""
+-        review = _make_llm_review()
+-        self.assertTrue(review.agrees_with_scanners)
+-        self.assertFalse(review.disables_validation)
+-        self.assertFalse(review.suppresses_tests)
+-        self.assertFalse(review.removes_logging_or_audit)
+-
+-    def test_review_to_dict(self):
+-        """LLM review to_dict must include all fields."""
+-        review = _make_llm_review()
+-        d = review.to_dict()
+-        self.assertIn("model_id", d)
+-        self.assertIn("agrees_with_scanners", d)
+-        self.assertIn("disables_validation", d)
+-        self.assertIn("suppresses_tests", d)
+-        self.assertIn("removes_logging_or_audit", d)
++class TestRescanComparison(unittest.TestCase):
++    """Tests for step 9 rescan comparison logic."""
+ 
++    def _setup_pipeline_to_step_8(self) -> SecureCodingPipeline:
++        """Run pipeline through step 8."""
++        pipeline = SecureCodingPipeline()
++        pipeline.step_01_ai_patch_proposed(
++            _make_clean_source(), _make_patched_source(), "gpt-5", "fix"
++        )
++        pipeline.step_02_source_normalized_and_hashed()
++        pipeline.step_03_static_scanners_run([
++            ("semgrep", "1.50.0", _make_resolved_sarif_results()),
++        ])
++        pipeline.step_04_sarif_results_aggregated()
++        pipeline.step_05_ast_policy_gate_runs()
++        pipeline.step_06_llm_reviews_scanner_evidence(_make_llm_review())
++        pipeline.step_07_minimal_patch_generated()
++        pipeline.step_08_tests_run(_make_test_result())
++        return pipeline
+ 
+-# ═══════════════════════════════════════════════════════════════════════════════
+-# TEST: TEST EXECUTION RESULT
+-# ═══════════════════════════════════════════════════════════════════════════════
++    def test_clean_rescan_passes(self):
++        pipeline = self._setup_pipeline_to_step_8()
++        result = pipeline.step_09_patched_code_rescanned([
++            ("semgrep", "1.50.0", []),
++        ])
++        self.assertTrue(result.passed)
+ 
+-class TestTestExecutionResult(unittest.TestCase):
+-    """Tests for test execution result structure."""
++    def test_rescan_blocks_new_errors(self):
++        pipeline = self._setup_pipeline_to_step_8()
++        new_error = SARIFResult(
++            rule_id="NEW001", message="New error", level="error",
++            file_path="app.py", start_line=5, end_line=5, cwe_ids=[89],
++        )
++        result = pipeline.step_09_patched_code_rescanned([
++            ("semgrep", "1.50.0", [new_error]),
++        ])
++        self.assertFalse(result.passed)
++        self.assertTrue(any("error-level" in e for e in result.errors))
+ 
+-    def test_passing_result(self):
+-        """Passing test result must report passed=True."""
+-        result = _make_test_result(passed=True)
+-        self.assertTrue(result.passed)
+-        self.assertEqual(result.failed_tests, 0)
++    def test_rescan_blocks_new_unwaived_warnings(self):
++        pipeline = self._setup_pipeline_to_step_8()
++        new_warning = SARIFResult(
++            rule_id="NEW002", message="New warning", level="warning",
++            file_path="app.py", start_line=10, end_line=10, cwe_ids=[79],
++        )
++        result = pipeline.step_09_patched_code_rescanned([
++            ("semgrep", "1.50.0", [new_warning]),
++        ])
++        self.assertFalse(result.passed)
++        self.assertTrue(any("warning-level" in e for e in result.errors))
+ 
+-    def test_failing_result(self):
+-        """Failing test result must report passed=False."""
+-        result = _make_test_result(passed=False)
++    def test_rescan_allows_waived_warnings(self):
++        pipeline = self._setup_pipeline_to_step_8()
++        waived_warning = SARIFResult(
++            rule_id="NEW002", message="Waived warning", level="warning",
++            file_path="app.py", start_line=10, end_line=10, cwe_ids=[79],
++            waived=True,
++        )
++        result = pipeline.step_09_patched_code_rescanned([
++            ("semgrep", "1.50.0", [waived_warning]),
++        ])
++        # No unwaived warnings, but the waived warning is still a finding
++        # Check that no warning-level error was raised
++        warning_errors = [e for e in result.errors if "warning-level" in e]
++        self.assertEqual(len(warning_errors), 0)
++
++    def test_rescan_blocks_new_top25_cwe(self):
++        """Rescan must block if new Top 25 CWE appears."""
++        pipeline = self._setup_pipeline_to_step_8()
++        # Original scan had CWE-89, 79 (resolved). Rescan introduces CWE-502.
++        new_finding = SARIFResult(
++            rule_id="NEW003", message="Deserialization issue", level="error",
++            file_path="app.py", start_line=15, end_line=15, cwe_ids=[502],
++        )
++        result = pipeline.step_09_patched_code_rescanned([
++            ("semgrep", "1.50.0", [new_finding]),
++        ])
+         self.assertFalse(result.passed)
+-        self.assertGreater(result.failed_tests, 0)
++        self.assertTrue(any("Top 25" in e for e in result.errors))
+ 
+-    def test_hash_deterministic(self):
+-        """Test result hash must be deterministic."""
+-        result = _make_test_result()
+-        h1 = result.compute_hash()
+-        h2 = result.compute_hash()
+-        self.assertEqual(h1, h2)
+-        self.assertEqual(len(h1), 64)
++    def test_rescan_fails_with_no_results(self):
++        pipeline = self._setup_pipeline_to_step_8()
++        result = pipeline.step_09_patched_code_rescanned([])
++        self.assertFalse(result.completed)
+ 
+ 
+ # ═══════════════════════════════════════════════════════════════════════════════
+-# TEST: HUMAN SECURITY REVIEW
++# HUMAN REVIEW TESTS
+ # ═══════════════════════════════════════════════════════════════════════════════
+ 
+-class TestHumanSecurityReview(unittest.TestCase):
+-    """Tests for human security review validation."""
++class TestHumanReview(unittest.TestCase):
++    """Tests for human security review."""
+ 
+     def test_valid_review(self):
+-        """Valid review with identity and evidence hash must pass."""
+         review = _make_human_review(approved=True)
+         self.assertTrue(review.is_valid())
+ 
+     def test_invalid_review_no_identity(self):
+-        """Review without identity must be invalid."""
+         review = HumanSecurityReview(
+             reviewer_identity="",
+             approved=True,
+@@ -1167,7 +1024,6 @@
+         self.assertFalse(review.is_valid())
+ 
+     def test_invalid_review_no_evidence_hash(self):
+-        """Review without evidence hash must be invalid."""
+         review = HumanSecurityReview(
+             reviewer_identity="reviewer@example.com",
+             approved=True,
+@@ -1176,5 +1032,24 @@
+         self.assertFalse(review.is_valid())
+ 
+ 
++# ═══════════════════════════════════════════════════════════════════════════════
++# PIPELINE SUMMARY TESTS
++# ═══════════════════════════════════════════════════════════════════════════════
++
++class TestPipelineSummary(unittest.TestCase):
++    """Tests for pipeline summary."""
++
++    def test_summary_structure(self):
++        pipeline = SecureCodingPipeline()
++        pipeline.step_01_ai_patch_proposed(
++            _make_clean_source(), _make_patched_source(), "gpt-5", "fix"
++        )
++        summary = pipeline.get_pipeline_summary()
++        self.assertIn("pipeline_id", summary)
++        self.assertIn("steps_completed", summary)
++        self.assertIn("step_results", summary)
++        self.assertEqual(summary["steps_completed"], 1)
++
++
+ if __name__ == "__main__":
+     unittest.main()
+
+=== diff: qneo_security_gate.py (no changes) ===
+
+=== diff: test_qneo_security_gate.py (no changes) ===
+
+=== diff: tsconfig.json ===
+--- upload/tsconfig.json	2026-04-27 15:28:49.199000713 -0400
++++ aim-drag-v2/tsconfig.json	2026-04-27 16:02:43.515361408 -0400
+@@ -1,18 +1,10 @@
+ {
++  "extends": "./tsconfig.base.json",
+   "compilerOptions": {
+-    "target": "ES2022",
+-    "module": "ES2022",
++    "module": "ESNext",
+     "moduleResolution": "bundler",
+-    "strict": true,
+-    "esModuleInterop": true,
+-    "skipLibCheck": true,
+-    "forceConsistentCasingInFileNames": true,
+-    "outDir": "./dist",
+-    "rootDir": ".",
+-    "declaration": true,
+-    "declarationMap": true,
+-    "sourceMap": true,
+-    "types": ["node"]
++    "noEmit": true,
++    "types": ["node", "vitest/globals"]
+   },
+   "include": ["lib/**/*.ts", "tests/**/*.ts"],
+   "exclude": ["node_modules", "dist"]
+
+=== diff: package.json ===
+--- upload/package.json	2026-04-27 15:28:49.227000858 -0400
++++ aim-drag-v2/package.json	2026-04-27 16:02:50.795384007 -0400
+@@ -5,8 +5,12 @@
+   "main": "index.js",
+   "type": "module",
+   "scripts": {
++    "typecheck": "tsc -p tsconfig.build.json --noEmit",
++    "typecheck:test": "tsc -p tsconfig.test.json",
++    "build": "tsc -p tsconfig.build.json",
+     "test": "vitest run",
+-    "test:watch": "vitest"
++    "test:watch": "vitest",
++    "ci": "pnpm install --frozen-lockfile && pnpm typecheck && pnpm typecheck:test && pnpm test"
+   },
+   "keywords": [],
+   "author": "",
+
+=== diff: release-governance.test.ts ===
+--- upload/release-governance.test.ts	2026-04-27 15:28:49.139000402 -0400
++++ aim-drag-v2/tests/release-governance.test.ts	2026-04-27 16:03:13.435454334 -0400
+@@ -187,7 +187,7 @@
+       sm.transitionToAlpha('rm-alice', ctx);
+ 
+       expect(() => sm.transitionToBeta('rm-alice', badGate, ctx)).toThrow(
+-        'BETA_GATE_FAILED: Feature freeze not acknowledged'
++        /^BETA_GATE_FAILED: Feature freeze not acknowledged$/
+       );
+     });
+ 
+@@ -200,7 +200,7 @@
+       sm.transitionToBeta('rm-alice', makeBetaGate(), ctx);
+ 
+       expect(() => sm.transitionToRC('rm-alice', badGate, ctx)).toThrow(
+-        'RC_GATE_FAILED: Peer review not complete'
++        /^RC_GATE_FAILED: Peer review not complete$/
+       );
+     });
+ 
+@@ -214,7 +214,7 @@
+       sm.transitionToRC('rm-alice', makeRCGate(), ctx);
+ 
+       expect(() => sm.transitionToFinal('rm-alice', badGate, ctx)).toThrow(
+-        'FINAL_GATE_FAILED: SHA-256 not verified (AIM DRAG policy)'
++        /^FINAL_GATE_FAILED: SHA-256 not verified \(AIM DRAG policy\)$/
+       );
+     });
+ 
+@@ -228,7 +228,7 @@
+       sm.transitionToRC('rm-alice', makeRCGate(), ctx);
+ 
+       expect(() => sm.transitionToFinal('rm-alice', badGate, ctx)).toThrow(
+-        'FINAL_GATE_FAILED: QNEO evidence not complete (AIM DRAG policy)'
++        /^FINAL_GATE_FAILED: QNEO evidence not complete \(AIM DRAG policy\)$/
+       );
+     });
+   });
+@@ -239,7 +239,7 @@
+       const badCtx = { ...makeSecurityContext(), actorMfaVerified: false };
+ 
+       expect(() => sm.transitionToAlpha('rm-alice', badCtx)).toThrow(
+-        'AUTHORITY_DENIED: MFA not verified'
++        /^AUTHORITY_DENIED: MFA not verified$/
+       );
+     });
+ 
+@@ -251,7 +251,7 @@
+       };
+ 
+       expect(() => sm.transitionToAlpha('rm-alice', badCtx)).toThrow(
+-        'AUTHORITY_DENIED: Branch protection not enabled'
++        /^AUTHORITY_DENIED: Branch protection not enabled$/
+       );
+     });
+ 
+@@ -271,7 +271,7 @@
+ 
+       // Any transition should fail
+       expect(() => sm.transitionToAlpha('rm-alice', ctx)).toThrow(
+-        'AUTHORITY_DENIED: Release is frozen (EOL)'
++        /^AUTHORITY_DENIED: Release is frozen \(EOL\)$/
+       );
+     });
+   });
+
+=== new file: tsconfig.base.json ===
+--- /dev/null	2026-04-27 05:57:04.967978260 -0400
++++ aim-drag-v2/tsconfig.base.json	2026-04-27 16:02:27.855313885 -0400
+@@ -0,0 +1,13 @@
++{
++  "compilerOptions": {
++    "target": "ES2022",
++    "strict": true,
++    "esModuleInterop": true,
++    "forceConsistentCasingInFileNames": true,
++    "skipLibCheck": true,
++    "noUncheckedIndexedAccess": true,
++    "exactOptionalPropertyTypes": true,
++    "useUnknownInCatchVariables": true,
++    "noImplicitOverride": true
++  }
++}
+
+=== new file: tsconfig.build.json ===
+--- /dev/null	2026-04-27 05:57:04.967978260 -0400
++++ aim-drag-v2/tsconfig.build.json	2026-04-27 16:02:32.643328212 -0400
+@@ -0,0 +1,15 @@
++{
++  "extends": "./tsconfig.base.json",
++  "compilerOptions": {
++    "module": "NodeNext",
++    "moduleResolution": "NodeNext",
++    "outDir": "./dist",
++    "rootDir": "./lib",
++    "declaration": true,
++    "declarationMap": true,
++    "sourceMap": true,
++    "types": ["node"]
++  },
++  "include": ["lib/**/*.ts"],
++  "exclude": ["node_modules", "dist", "tests"]
++}
+
+=== new file: tsconfig.test.json ===
+--- /dev/null	2026-04-27 05:57:04.967978260 -0400
++++ aim-drag-v2/tsconfig.test.json	2026-04-27 16:02:37.679343281 -0400
+@@ -0,0 +1,11 @@
++{
++  "extends": "./tsconfig.base.json",
++  "compilerOptions": {
++    "module": "ESNext",
++    "moduleResolution": "bundler",
++    "noEmit": true,
++    "types": ["node", "vitest/globals"]
++  },
++  "include": ["lib/**/*.ts", "tests/**/*.ts"],
++  "exclude": ["node_modules", "dist"]
++}

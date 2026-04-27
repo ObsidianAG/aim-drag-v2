@@ -1,0 +1,4 @@
+
+> release-governance@1.0.0 typecheck:test /home/ubuntu/aim-drag-v2
+> tsc -p tsconfig.test.json
+
