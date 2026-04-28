@@ -1,5 +1,5 @@
 /**
- * server/vllm-planner.ts — vLLM Prompt Planner for Text2VideoRank
+ * server/vllm-planner.ts -- vLLM Prompt Planner for Text2VideoRank
  *
  * Uses vLLM (OpenAI-compatible) to convert user prompts into
  * structured, provider-ready video job specs.
@@ -20,7 +20,7 @@ import type { PlannerOutput, SafetyCheck, ScenePlan } from './video-types.js';
 import { scanPromptSafety, safetyToDecision } from './safety-gate.js';
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SYSTEM PROMPT (Section 7 of spec — exact text)
+// SYSTEM PROMPT (Section 7 of spec -- exact text)
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const VLLM_SYSTEM_PROMPT = `You are the Prompt Planner and Proof Auditor for a production Text to AI Video web app.
@@ -85,7 +85,7 @@ export function splitScenes(
 }
 
 function extractSubject(prompt: string): string {
-  // Simple extraction — in production, vLLM would do this
+  // Simple extraction -- in production, vLLM would do this
   const words = prompt.split(/\s+/).slice(0, 5);
   return words.join(' ') || 'subject';
 }
@@ -103,13 +103,13 @@ function extractSetting(prompt: string): string {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * planPrompt — takes user input and returns the structured JSON shape.
+ * planPrompt -- takes user input and returns the structured JSON shape.
  *
  * In production, this calls the vLLM OpenAI-compatible endpoint.
  * Here we implement the deterministic logic that the vLLM would produce,
  * ensuring the output always matches PlannerOutputSchema.
  *
- * Uses safeParse — never .parse().
+ * Uses safeParse -- never .parse().
  */
 export function planPrompt(input: PlanPromptInput): {
   success: true;

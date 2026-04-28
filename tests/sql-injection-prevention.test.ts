@@ -1,5 +1,5 @@
 /**
- * tests/sql-injection-prevention.test.ts — SQL injection prevention gate
+ * tests/sql-injection-prevention.test.ts -- SQL injection prevention gate
  *
  * Proves:
  *   1. No raw string SQL interpolation with user input
@@ -52,10 +52,14 @@ async function cleanAll() {
 
 beforeEach(async () => {
   await cleanAll();
+  // Seed required providers for FK constraint
+  await pgClient`INSERT INTO providers (provider_id, name) VALUES ('runway', 'Runway') ON CONFLICT DO NOTHING`;
+  await pgClient`INSERT INTO providers (provider_id, name) VALUES ('test_provider', 'Test Provider') ON CONFLICT DO NOTHING`;
 });
 
 afterAll(async () => {
   await cleanAll();
+  await pgClient`DELETE FROM providers`;
   await pgClient.end();
 });
 
@@ -118,9 +122,9 @@ describe('Static analysis: No raw SQL string interpolation', () => {
     }
 
     if (violations.length > 0) {
-      console.error('SQL injection risk — raw SQL string interpolation found:');
+      console.error('SQL injection risk -- raw SQL string interpolation found:');
       for (const v of violations) {
-        console.error(`  ${v.file}:${v.line} — ${v.text}`);
+        console.error(`  ${v.file}:${v.line} -- ${v.text}`);
       }
     }
 
@@ -191,15 +195,15 @@ describe('Runtime: Search endpoint does not concatenate SQL', () => {
     expect(results.length).toBe(0);
   });
 
-  it('handles null byte injection safely — PostgreSQL rejects invalid encoding', async () => {
-    // PostgreSQL rejects null bytes in UTF-8 — this is a database-level defense.
+  it('handles null byte injection safely -- PostgreSQL rejects invalid encoding', async () => {
+    // PostgreSQL rejects null bytes in UTF-8 -- this is a database-level defense.
     // The query is still parameterized (not concatenated), so no SQL injection occurs.
     // The error proves the input was sent as a parameter, not interpolated into SQL.
     await expect(
       searchJobsByPrompt(db, "test\0'; DROP TABLE video_jobs;--"),
     ).rejects.toThrow();
 
-    // Verify table still exists — no SQL injection occurred
+    // Verify table still exists -- no SQL injection occurred
     const check = await pgClient`SELECT count(*)::int as cnt FROM video_jobs`;
     expect(check[0]!.cnt).toBeGreaterThanOrEqual(1);
   });

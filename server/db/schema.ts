@@ -1,5 +1,5 @@
 /**
- * server/db/schema.ts — Drizzle ORM schema for Text2VideoRank PostgreSQL persistence layer
+ * server/db/schema.ts -- Drizzle ORM schema for Text2VideoRank PostgreSQL persistence layer
  *
  * 15 production tables with full SQL constraints:
  *   users, projects, video_jobs, video_job_events, providers, provider_requests,
@@ -10,7 +10,9 @@
  *   - All constraints enforced at database level
  *   - Foreign keys with ON DELETE CASCADE where specified
  *   - Check constraints for enums, verified/sha256 invariant
+ *   - SHA-256 format validation via regex CHECK
  *   - Unique indexes for idempotency keys
+ *   - updatedAt columns on all mutable tables
  */
 
 import {
@@ -59,7 +61,8 @@ export const videoJobs = pgTable('video_jobs', {
   id: bigserial({ mode: 'number' }).primaryKey(),
   jobId: text('job_id').notNull().unique(),
   idempotencyKey: text('idempotency_key').notNull().unique(),
-  projectId: text('project_id'),
+  // FIX 1: FK to projects.project_id
+  projectId: text('project_id').references(() => projects.projectId, { onDelete: 'set null' }),
   userPrompt: text('user_prompt').notNull(),
   rewrittenPrompt: text('rewritten_prompt'),
   scenePlan: jsonb('scene_plan').notNull().default(sql`'[]'::jsonb`),
@@ -106,16 +109,20 @@ export const providers = pgTable('providers', {
 export const providerRequests = pgTable('provider_requests', {
   id: bigserial({ mode: 'number' }).primaryKey(),
   jobId: text('job_id').notNull().references(() => videoJobs.jobId, { onDelete: 'cascade' }),
-  provider: text('provider').notNull(),
+  // FIX 2: FK to providers.provider_id
+  provider: text('provider').notNull().references(() => providers.providerId),
   model: text('model').notNull(),
   providerJobId: text('provider_job_id'),
   providerRequestKey: text('provider_request_key').notNull().unique(),
   requestPayload: jsonb('request_payload').notNull(),
   responsePayload: jsonb('response_payload'),
+  // FIX 3: CHECK constraint for status
   status: text('status').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   unique('provider_requests_provider_job_unique').on(table.provider, table.providerJobId),
+  // FIX 3: CHECK constraint for provider_requests.status
+  check('provider_requests_status_check', sql`${table.status} IN ('queued','submitted','running','succeeded','failed','cancelled')`),
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -126,12 +133,15 @@ export const artifacts = pgTable('artifacts', {
   jobId: text('job_id').notNull().references(() => videoJobs.jobId, { onDelete: 'cascade' }),
   artifactUrl: text('artifact_url').notNull(),
   storageKey: text('storage_key').notNull().unique(),
+  // FIX 4: SHA-256 format validation via regex CHECK
   sha256: text('sha256').notNull().unique(),
   contentType: text('content_type').notNull(),
   sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   check('artifacts_size_check', sql`${table.sizeBytes} > 0`),
+  // FIX 4: SHA-256 regex -- must be exactly 64 lowercase hex chars
+  check('artifacts_sha256_format_check', sql`${table.sha256} ~ '^[a-f0-9]{64}$'`),
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -140,12 +150,15 @@ export const artifacts = pgTable('artifacts', {
 export const artifactVerifications = pgTable('artifact_verifications', {
   id: bigserial({ mode: 'number' }).primaryKey(),
   jobId: text('job_id').notNull().references(() => videoJobs.jobId, { onDelete: 'cascade' }),
+  // FIX 4: SHA-256 format validation also on artifact_sha256 reference
   artifactSha256: text('artifact_sha256').notNull().references(() => artifacts.sha256),
   verified: boolean('verified').notNull().default(false),
   verificationNotes: text('verification_notes').notNull().default(''),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   check('artifact_verifications_sha256_check', sql`NOT (${table.verified} = true AND (${table.artifactSha256} IS NULL OR ${table.artifactSha256} = ''))`),
+  // FIX 4: SHA-256 format on artifact_sha256 column
+  check('artifact_verifications_sha256_format_check', sql`${table.artifactSha256} ~ '^[a-f0-9]{64}$'`),
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -1,5 +1,5 @@
 /**
- * tests/db-idempotency.test.ts — Idempotency key tests
+ * tests/db-idempotency.test.ts -- Idempotency key tests
  *
  * Proves:
  *   - video_jobs.idempotency_key is unique (duplicate rejected)
@@ -47,10 +47,14 @@ async function cleanAll() {
 
 beforeEach(async () => {
   await cleanAll();
+  // Seed required providers for FK constraint
+  await pgClient`INSERT INTO providers (provider_id, name) VALUES ('runway', 'Runway') ON CONFLICT DO NOTHING`;
+  await pgClient`INSERT INTO providers (provider_id, name) VALUES ('test_provider', 'Test Provider') ON CONFLICT DO NOTHING`;
 });
 
 afterAll(async () => {
   await cleanAll();
+  await pgClient`DELETE FROM providers`;
   await pgClient.end();
 });
 
@@ -191,7 +195,7 @@ describe('provider_requests.provider_request_key uniqueness', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('artifacts.sha256 uniqueness (webhook + poller dedup)', () => {
-  it('rejects duplicate sha256 — only one artifact record wins', async () => {
+  it('rejects duplicate sha256 -- only one artifact record wins', async () => {
     await createJobWithEvent(db, {
       jobId: 'idem-art-job-001',
       idempotencyKey: 'idem-art-idem-001',

@@ -1,7 +1,7 @@
 {
   "name": "text2video-rank",
   "version": "1.0.0",
-  "description": "AIM DRAG text2video ranking — Expo Router web + custom Node server",
+  "description": "AIM DRAG text2video ranking -- Expo Router web + custom Node server",
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.build.json --noEmit && tsc -p tsconfig.server.json --noEmit",
@@ -27,7 +27,11 @@
     "ci": "pnpm install --frozen-lockfile && pnpm typecheck && pnpm typecheck:test && pnpm test && pnpm ast:gate && pnpm build",
     "proof:secrets": "node scripts/audit-secrets.mjs",
     "proof:providers": "node scripts/audit-providers.mjs",
-    "proof:claims": "node scripts/audit-claims.mjs"
+    "proof:claims": "node scripts/audit-claims.mjs",
+    "typo:dash:scan": "node scripts/typo-dash-scan.mjs",
+    "test:completed-job": "vitest run tests/completed-job-verification.test.ts",
+    "test:updated-at": "vitest run tests/updated-at-trigger.test.ts",
+    "seed:claims": "node scripts/seed-claims.mjs"
   },
   "keywords": [
     "aim-drag",

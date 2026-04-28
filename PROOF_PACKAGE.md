@@ -614,3 +614,37 @@ The application is protected against SQL injection through the following mechani
 
 ### 5.10 Rollback Behavior
 If any step within a transaction fails (e.g., a constraint violation or network error), the entire transaction is rolled back by PostgreSQL. This ensures the database never enters an inconsistent state (e.g., an artifact record existing without its corresponding verification record). The application follows a **FAIL_CLOSED** policy on database errors.
+
+## 14. Schema Fixes (Build 2)
+
+### Fix 1: FK video_jobs.project_id -> projects.project_id
+- Migration: `ALTER TABLE "video_jobs" ADD CONSTRAINT "video_jobs_project_id_projects_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("project_id") ON DELETE set null`
+- Verified via `\d+ video_jobs` introspection
+
+### Fix 2: FK provider_requests.provider -> providers.provider_id
+- Migration: `ALTER TABLE "provider_requests" ADD CONSTRAINT "provider_requests_provider_providers_provider_id_fk" FOREIGN KEY ("provider") REFERENCES "public"."providers"("provider_id")`
+- Verified via `\d+ provider_requests` introspection
+
+### Fix 3: CHECK constraint provider_requests.status
+- Migration: `ALTER TABLE "provider_requests" ADD CONSTRAINT "provider_requests_status_check" CHECK ("provider_requests"."status" IN ('queued','submitted','running','succeeded','failed','cancelled'))`
+- Verified via `\d+ provider_requests` introspection
+
+### Fix 4: SHA-256 format validation
+- `artifacts.sha256 ~ '^[a-f0-9]{64}$'`
+- `artifact_verifications.artifact_sha256 ~ '^[a-f0-9]{64}$'`
+- Both verified via `\d+` introspection
+
+### Fix 5: Completed-job artifact verification guard
+- Service-level transition guard in `transitionJobToCompleted()`
+- Checks for verified `artifact_verifications` row before allowing `completed` status
+- 5 regression tests in `completed-job-verification.test.ts`
+
+### Fix 6: updatedAt database triggers
+- `trigger_set_updated_at()` function applied to users, projects, video_jobs, providers
+- 4 regression tests in `updated-at-trigger.test.ts`
+- Verified via `pg_trigger` introspection
+
+### Fix 7: Typographic dash scan gate
+- `scripts/typo-dash-scan.mjs` scans all source files for U+2013 (en-dash) and U+2014 (em-dash)
+- All typographic dashes replaced with ASCII equivalents
+- Gate exit code: 0 (PASS)

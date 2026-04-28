@@ -1,9 +1,9 @@
 /**
- * server/job-api.ts — Job API Routes for Text2VideoRank
+ * server/job-api.ts -- Job API Routes for Text2VideoRank
  *
- * POST /api/video-jobs        — create a video job
- * GET  /api/video-jobs/:jobId — get job status
- * GET  /api/video-jobs/:jobId/artifact — get artifact URL
+ * POST /api/video-jobs        -- create a video job
+ * GET  /api/video-jobs/:jobId -- get job status
+ * GET  /api/video-jobs/:jobId/artifact -- get artifact URL
  *
  * All routes use safeParse at entry boundary.
  * AIM DRAG: observe → decide → enforce → prove
@@ -23,11 +23,11 @@ import { storeJob, getJob, processJob, getEvidence } from './worker-pipeline.js'
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * POST /api/video-jobs — Create a new video job.
+ * POST /api/video-jobs -- Create a new video job.
  * Uses safeParse at entry boundary.
  */
 export function handleCreateVideoJob(body: string): { status: number; body: string } {
-  // safeParse at entry boundary — never .parse()
+  // safeParse at entry boundary -- never .parse()
   let rawBody: unknown;
   try {
     rawBody = JSON.parse(body);
@@ -106,7 +106,7 @@ export function handleCreateVideoJob(body: string): { status: number; body: stri
 }
 
 /**
- * GET /api/video-jobs/:jobId — Get job status.
+ * GET /api/video-jobs/:jobId -- Get job status.
  */
 export function handleGetVideoJob(jobId: string): { status: number; body: string } {
   if (!jobId) {
@@ -144,7 +144,7 @@ export function handleGetVideoJob(jobId: string): { status: number; body: string
 }
 
 /**
- * GET /api/video-jobs/:jobId/artifact — Get artifact URL.
+ * GET /api/video-jobs/:jobId/artifact -- Get artifact URL.
  * Only returns artifact if job is completed with full proof chain.
  */
 export function handleGetArtifact(jobId: string): { status: number; body: string } {

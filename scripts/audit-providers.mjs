@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * scripts/audit-providers.mjs — Prove no direct client fetch to AI providers
+ * scripts/audit-providers.mjs -- Prove no direct client fetch to AI providers
  *
  * Scans lib/ and dist-web/ for any reference to AI provider endpoints.
  * Server code (server/) is ALLOWED to call providers.
@@ -64,10 +64,10 @@ for (const dir of dirs) {
 console.log(`audit-providers: Scanned ${totalScanned} client-facing files in [${dirs.join(', ')}]\n`);
 
 if (FINDINGS.length === 0) {
-  console.log('audit-providers: CLEAN — No direct client-side AI provider calls found.');
+  console.log('audit-providers: CLEAN -- No direct client-side AI provider calls found.');
   process.exit(0);
 } else {
-  console.error(`audit-providers: FAIL — ${FINDINGS.length} provider reference(s) found in client code:\n`);
+  console.error(`audit-providers: FAIL -- ${FINDINGS.length} provider reference(s) found in client code:\n`);
   for (const f of FINDINGS) {
     console.error(`  ✗ ${f.file}: ${f.provider}`);
   }

@@ -1,0 +1,1162 @@
+═══════════════════════════════════════════════════════════════
+PROOF CAPTURE — Schema Fixes + Typographic Dash Scan
+Timestamp: 2026-04-28T21:04:17Z
+═══════════════════════════════════════════════════════════════
+
+1. GIT DIFF (full diff of all changes)
+═══════════════════════════════════════════════════════════════
+ drizzle/meta/_journal.json             |   7 +++
+ package.json                           |   8 ++-
+ scripts/ast-gate.mjs                   |  12 ++--
+ scripts/audit-claims.mjs               |   8 +--
+ scripts/audit-providers.mjs            |   6 +-
+ scripts/audit-secrets.mjs              |   6 +-
+ scripts/build-server.mjs               |   4 +-
+ scripts/claim-audit-db-check.mjs       |   8 +--
+ scripts/db-check.mjs                   |  14 ++---
+ scripts/db-migrate-deploy.mjs          |   2 +-
+ scripts/db-proof.mjs                   |   2 +-
+ scripts/guard-db-env.mjs               |   2 +-
+ scripts/proof-package-db-check.mjs     |  10 ++--
+ scripts/seed-claims.mjs                |  18 +++---
+ server/artifact-storage.ts             |   2 +-
+ server/db/connection.ts                |   6 +-
+ server/db/index.ts                     |   2 +-
+ server/db/repository.ts                | 103 ++++++++++++++++++++++++++++-----
+ server/db/schema.ts                    |  19 +++++-
+ server/index.ts                        |  10 ++--
+ server/job-api.ts                      |  16 ++---
+ server/provider-router.ts              |   6 +-
+ server/safety-gate.ts                  |   2 +-
+ server/video-types.ts                  |  22 +++----
+ server/vllm-planner.ts                 |  10 ++--
+ server/worker-pipeline.ts              |   2 +-
+ tests/db-idempotency.test.ts           |   8 ++-
+ tests/db-persistence.test.ts           |   9 ++-
+ tests/sql-injection-prevention.test.ts |  16 +++--
+ 29 files changed, 225 insertions(+), 115 deletions(-)
+
+diff --git a/drizzle/meta/_journal.json b/drizzle/meta/_journal.json
+index 6c44dbb..cf5ce7f 100644
+--- a/drizzle/meta/_journal.json
++++ b/drizzle/meta/_journal.json
+@@ -8,6 +8,13 @@
+       "when": 1777338039557,
+       "tag": "0000_glorious_prodigy",
+       "breakpoints": true
++    },
++    {
++      "idx": 1,
++      "version": "7",
++      "when": 1777409900950,
++      "tag": "0001_bored_outlaw_kid",
++      "breakpoints": true
+     }
+   ]
+ }
+\ No newline at end of file
+diff --git a/package.json b/package.json
+index d1c65cf..60d1fe6 100644
+--- a/package.json
++++ b/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "text2video-rank",
+   "version": "1.0.0",
+-  "description": "AIM DRAG text2video ranking — Expo Router web + custom Node server",
++  "description": "AIM DRAG text2video ranking -- Expo Router web + custom Node server",
+   "type": "module",
+   "scripts": {
+     "typecheck": "tsc -p tsconfig.build.json --noEmit && tsc -p tsconfig.server.json --noEmit",
+@@ -27,7 +27,11 @@
+     "ci": "pnpm install --frozen-lockfile && pnpm typecheck && pnpm typecheck:test && pnpm test && pnpm ast:gate && pnpm build",
+     "proof:secrets": "node scripts/audit-secrets.mjs",
+     "proof:providers": "node scripts/audit-providers.mjs",
+-    "proof:claims": "node scripts/audit-claims.mjs"
++    "proof:claims": "node scripts/audit-claims.mjs",
++    "typo:dash:scan": "node scripts/typo-dash-scan.mjs",
++    "test:completed-job": "vitest run tests/completed-job-verification.test.ts",
++    "test:updated-at": "vitest run tests/updated-at-trigger.test.ts",
++    "seed:claims": "node scripts/seed-claims.mjs"
+   },
+   "keywords": [
+     "aim-drag",
+diff --git a/server/db/repository.ts b/server/db/repository.ts
+index 6117bf2..021a66e 100644
+--- a/server/db/repository.ts
++++ b/server/db/repository.ts
+@@ -1,5 +1,5 @@
+ /**
+- * server/db/repository.ts — Database persistence layer for Text2VideoRank
++ * server/db/repository.ts -- Database persistence layer for Text2VideoRank
+  *
+  * All operations use parameterized queries via Drizzle ORM.
+  * No raw string SQL interpolation. safeParse on all inputs.
+@@ -10,6 +10,8 @@
+  *   - Fail-closed on unknown errors
+  *   - Transactions for atomic multi-step writes
+  *   - Idempotency keys prevent duplicate writes
++ *   - Completed-job verification guard (FIX 5)
++ *   - updatedAt managed by DB triggers (FIX 6)
+  */
+ 
+ import { eq, and, sql } from 'drizzle-orm';
+@@ -90,6 +92,17 @@ export interface CreateClaimAuditInput {
+   uiBadgeExpected: string;
+ }
+ 
++// ═══════════════════════════════════════════════════════════════════════════
++// Error: Completed-job verification guard
++// ═══════════════════════════════════════════════════════════════════════════
++
++export class CompletedJobVerificationError extends Error {
++  constructor(jobId: string) {
++    super(`FAIL_CLOSED: Job ${jobId} cannot transition to completed without a verified artifact_verifications row`);
++    this.name = 'CompletedJobVerificationError';
++  }
++}
++
+ // ═══════════════════════════════════════════════════════════════════════════
+ // Transaction 1: Create job + initial event (spec section 5)
+ // ═══════════════════════════════════════════════════════════════════════════
+@@ -99,7 +112,7 @@ export async function createJobWithEvent(
+   input: CreateJobInput,
+ ): Promise<{ jobId: string }> {
+   return await db.transaction(async (tx) => {
+-    // Insert job row — idempotency_key prevents duplicates
++    // Insert job row -- idempotency_key prevents duplicates
+     await tx.insert(videoJobs).values({
+       jobId: input.jobId,
+       idempotencyKey: input.idempotencyKey,
+@@ -139,7 +152,7 @@ export async function submitProviderRequest(
+   input: CreateProviderRequestInput,
+ ): Promise<void> {
+   await db.transaction(async (tx) => {
+-    // Insert provider request — provider_request_key prevents duplicates
++    // Insert provider request -- provider_request_key prevents duplicates
+     await tx.insert(providerRequests).values({
+       jobId: input.jobId,
+       provider: input.provider,
+@@ -150,7 +163,7 @@ export async function submitProviderRequest(
+       status: input.status,
+     });
+ 
+-    // Update job status
++    // Update job status (updatedAt handled by DB trigger)
+     await tx.update(videoJobs)
+       .set({ status: 'submitted', updatedAt: new Date() })
+       .where(eq(videoJobs.jobId, jobId));
+@@ -197,7 +210,7 @@ export async function storeArtifactWithVerification(
+   verificationNotes: string,
+ ): Promise<void> {
+   await db.transaction(async (tx) => {
+-    // Insert artifact — sha256 unique prevents duplicates (webhook + poller dedup)
++    // Insert artifact -- sha256 unique prevents duplicates (webhook + poller dedup)
+     await tx.insert(artifacts).values({
+       jobId: artifactInput.jobId,
+       artifactUrl: artifactInput.artifactUrl,
+@@ -215,7 +228,7 @@ export async function storeArtifactWithVerification(
+       verificationNotes,
+     });
+ 
+-    // Update job status
++    // Update job status (updatedAt handled by DB trigger)
+     await tx.update(videoJobs)
+       .set({ status: 'verifying', updatedAt: new Date() })
+       .where(eq(videoJobs.jobId, artifactInput.jobId));
+@@ -229,6 +242,52 @@ export async function storeArtifactWithVerification(
+   });
+ }
+ 
++// ═══════════════════════════════════════════════════════════════════════════
++// FIX 5: Completed-job verification guard
++// A job may transition to 'completed' ONLY if there is a verified
++// artifact_verifications row linked to that job.
++// ═══════════════════════════════════════════════════════════════════════════
++
++export async function transitionJobToCompleted(
++  db: DbInstance,
++  jobId: string,
++  finalDecision: string,
++): Promise<void> {
++  await db.transaction(async (tx) => {
++    // Check for verified artifact
++    const verifiedArtifacts = await tx.select()
++      .from(artifactVerifications)
++      .where(and(
++        eq(artifactVerifications.jobId, jobId),
++        eq(artifactVerifications.verified, true),
++      ));
++
++    if (verifiedArtifacts.length === 0) {
++      throw new CompletedJobVerificationError(jobId);
++    }
++
++    // Transition to completed
++    await tx.update(videoJobs)
++      .set({ status: 'completed', decision: finalDecision, updatedAt: new Date() })
++      .where(eq(videoJobs.jobId, jobId));
++
++    // Event
++    await tx.insert(videoJobEvents).values({
++      jobId,
++      eventType: 'job_completed',
++      eventPayload: { decision: finalDecision },
++    });
++
++    // Audit log
++    await tx.insert(auditLog).values({
++      action: 'job_completed',
++      entityType: 'video_job',
++      entityId: jobId,
++      metadata: { decision: finalDecision },
++    });
++  });
++}
++
+ // ═══════════════════════════════════════════════════════════════════════════
+ // Transaction 5: Claim audit + final decision update (spec section 5)
+ // ═══════════════════════════════════════════════════════════════════════════
+@@ -266,7 +325,7 @@ export async function writeClaimAuditAndDecision(
+       uiBadgeExpected: auditInput.uiBadgeExpected,
+     });
+ 
+-    // Update job final decision
++    // Update job final decision (updatedAt handled by DB trigger)
+     await tx.update(videoJobs)
+       .set({ decision: finalDecision, status: 'completed', updatedAt: new Date() })
+       .where(eq(videoJobs.jobId, jobId));
+@@ -306,7 +365,7 @@ export async function writeProofRunWithResults(
+   }>,
+ ): Promise<void> {
+   await db.transaction(async (tx) => {
+-    // Insert proof run — run_id unique prevents duplicates
++    // Insert proof run -- run_id unique prevents duplicates
+     await tx.insert(proofRuns).values({
+       runId,
+       finalDecision,
+@@ -373,6 +432,20 @@ export async function updateJobStatus(
+   status: string,
+   extra?: Record<string, unknown>,
+ ): Promise<void> {
++  // FIX 5: Guard against transitioning to 'completed' without verified artifact
++  if (status === 'completed') {
++    const verifiedArtifacts = await db.select()
++      .from(artifactVerifications)
++      .where(and(
++        eq(artifactVerifications.jobId, jobId),
++        eq(artifactVerifications.verified, true),
++      ));
++
++    if (verifiedArtifacts.length === 0) {
++      throw new CompletedJobVerificationError(jobId);
++    }
++  }
++
+   await db.transaction(async (tx) => {
+     await tx.update(videoJobs)
+       .set({ status, updatedAt: new Date(), ...extra })
+@@ -423,19 +496,19 @@ export async function getAllClaimsWithAudits(db: DbInstance) {
+ }
+ 
+ export async function searchJobsByPrompt(db: DbInstance, searchTerm: string) {
+-  // Parameterized LIKE query — no string concatenation
++  // Parameterized LIKE query -- no string concatenation
+   return await db.select().from(videoJobs)
+     .where(sql`${videoJobs.userPrompt} ILIKE ${'%' + searchTerm + '%'}`);
+ }
+ 
+ export async function filterClaimsByStatus(db: DbInstance, status: string) {
+-  // Parameterized — no string concatenation
++  // Parameterized -- no string concatenation
+   return await db.select().from(claimAudits)
+     .where(eq(claimAudits.verificationStatus, status));
+ }
+ 
+ export async function filterProviderRequests(db: DbInstance, provider: string) {
+-  // Parameterized — no string concatenation
++  // Parameterized -- no string concatenation
+   return await db.select().from(providerRequests)
+     .where(eq(providerRequests.provider, provider));
+ }
+@@ -451,7 +524,7 @@ export async function seedClaimsForProof(db: DbInstance): Promise<void> {
+       claimText: 'PostgreSQL enforces CHECK constraints at the database level',
+       toolId: 'postgresql_docs',
+       sourceUrl: 'https://www.postgresql.org/docs/current/ddl-constraints.html',
+-      sourceTitle: 'PostgreSQL Documentation — Constraints',
++      sourceTitle: 'PostgreSQL Documentation - Constraints',
+       confidence: 'HIGH' as const,
+       verificationStatus: 'VERIFIED' as const,
+       uiBadgeExpected: 'Verified' as const,
+@@ -462,7 +535,7 @@ export async function seedClaimsForProof(db: DbInstance): Promise<void> {
+       claimText: 'Drizzle ORM uses parameterized queries preventing SQL injection',
+       toolId: 'drizzle_docs',
+       sourceUrl: 'https://orm.drizzle.team/docs/sql',
+-      sourceTitle: 'Drizzle ORM — SQL Module Documentation',
++      sourceTitle: 'Drizzle ORM - SQL Module Documentation',
+       confidence: 'HIGH' as const,
+       verificationStatus: 'VERIFIED' as const,
+       uiBadgeExpected: 'Verified' as const,
+@@ -484,7 +557,7 @@ export async function seedClaimsForProof(db: DbInstance): Promise<void> {
+       claimText: 'Drizzle-kit generate produces forward-only SQL migrations',
+       toolId: 'drizzle_kit_docs',
+       sourceUrl: 'https://orm.drizzle.team/docs/kit-overview',
+-      sourceTitle: 'Drizzle Kit — Overview',
++      sourceTitle: 'Drizzle Kit - Overview',
+       confidence: 'HIGH' as const,
+       verificationStatus: 'VERIFIED' as const,
+       uiBadgeExpected: 'Verified' as const,
+@@ -495,7 +568,7 @@ export async function seedClaimsForProof(db: DbInstance): Promise<void> {
+       claimText: 'Foreign key constraints enforce referential integrity between tables',
+       toolId: 'postgresql_docs',
+       sourceUrl: 'https://www.postgresql.org/docs/current/ddl-constraints.html#DDL-CONSTRAINTS-FK',
+-      sourceTitle: 'PostgreSQL Documentation — Foreign Keys',
++      sourceTitle: 'PostgreSQL Documentation - Foreign Keys',
+       confidence: 'HIGH' as const,
+       verificationStatus: 'VERIFIED' as const,
+       uiBadgeExpected: 'Verified' as const,
+diff --git a/server/db/schema.ts b/server/db/schema.ts
+index 294f92d..6a0aa94 100644
+--- a/server/db/schema.ts
++++ b/server/db/schema.ts
+@@ -1,5 +1,5 @@
+ /**
+- * server/db/schema.ts — Drizzle ORM schema for Text2VideoRank PostgreSQL persistence layer
++ * server/db/schema.ts -- Drizzle ORM schema for Text2VideoRank PostgreSQL persistence layer
+  *
+  * 15 production tables with full SQL constraints:
+  *   users, projects, video_jobs, video_job_events, providers, provider_requests,
+@@ -10,7 +10,9 @@
+  *   - All constraints enforced at database level
+  *   - Foreign keys with ON DELETE CASCADE where specified
+  *   - Check constraints for enums, verified/sha256 invariant
++ *   - SHA-256 format validation via regex CHECK
+  *   - Unique indexes for idempotency keys
++ *   - updatedAt columns on all mutable tables
+  */
+ 
+ import {
+@@ -59,7 +61,8 @@ export const videoJobs = pgTable('video_jobs', {
+   id: bigserial({ mode: 'number' }).primaryKey(),
+   jobId: text('job_id').notNull().unique(),
+   idempotencyKey: text('idempotency_key').notNull().unique(),
+-  projectId: text('project_id'),
++  // FIX 1: FK to projects.project_id
++  projectId: text('project_id').references(() => projects.projectId, { onDelete: 'set null' }),
+   userPrompt: text('user_prompt').notNull(),
+   rewrittenPrompt: text('rewritten_prompt'),
+   scenePlan: jsonb('scene_plan').notNull().default(sql`'[]'::jsonb`),
+@@ -106,16 +109,20 @@ export const providers = pgTable('providers', {
+ export const providerRequests = pgTable('provider_requests', {
+   id: bigserial({ mode: 'number' }).primaryKey(),
+   jobId: text('job_id').notNull().references(() => videoJobs.jobId, { onDelete: 'cascade' }),
+-  provider: text('provider').notNull(),
++  // FIX 2: FK to providers.provider_id
++  provider: text('provider').notNull().references(() => providers.providerId),
+   model: text('model').notNull(),
+   providerJobId: text('provider_job_id'),
+   providerRequestKey: text('provider_request_key').notNull().unique(),
+   requestPayload: jsonb('request_payload').notNull(),
+   responsePayload: jsonb('response_payload'),
++  // FIX 3: CHECK constraint for status
+   status: text('status').notNull(),
+   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+ }, (table) => [
+   unique('provider_requests_provider_job_unique').on(table.provider, table.providerJobId),
++  // FIX 3: CHECK constraint for provider_requests.status
++  check('provider_requests_status_check', sql`${table.status} IN ('queued','submitted','running','succeeded','failed','cancelled')`),
+ ]);
+ 
+ // ═══════════════════════════════════════════════════════════════════════════
+@@ -126,12 +133,15 @@ export const artifacts = pgTable('artifacts', {
+   jobId: text('job_id').notNull().references(() => videoJobs.jobId, { onDelete: 'cascade' }),
+   artifactUrl: text('artifact_url').notNull(),
+   storageKey: text('storage_key').notNull().unique(),
++  // FIX 4: SHA-256 format validation via regex CHECK
+   sha256: text('sha256').notNull().unique(),
+   contentType: text('content_type').notNull(),
+   sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
+   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+ }, (table) => [
+   check('artifacts_size_check', sql`${table.sizeBytes} > 0`),
++  // FIX 4: SHA-256 regex -- must be exactly 64 lowercase hex chars
++  check('artifacts_sha256_format_check', sql`${table.sha256} ~ '^[a-f0-9]{64}$'`),
+ ]);
+ 
+ // ═══════════════════════════════════════════════════════════════════════════
+@@ -140,12 +150,15 @@ export const artifacts = pgTable('artifacts', {
+ export const artifactVerifications = pgTable('artifact_verifications', {
+   id: bigserial({ mode: 'number' }).primaryKey(),
+   jobId: text('job_id').notNull().references(() => videoJobs.jobId, { onDelete: 'cascade' }),
++  // FIX 4: SHA-256 format validation also on artifact_sha256 reference
+   artifactSha256: text('artifact_sha256').notNull().references(() => artifacts.sha256),
+   verified: boolean('verified').notNull().default(false),
+   verificationNotes: text('verification_notes').notNull().default(''),
+   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+ }, (table) => [
+   check('artifact_verifications_sha256_check', sql`NOT (${table.verified} = true AND (${table.artifactSha256} IS NULL OR ${table.artifactSha256} = ''))`),
++  // FIX 4: SHA-256 format on artifact_sha256 column
++  check('artifact_verifications_sha256_format_check', sql`${table.artifactSha256} ~ '^[a-f0-9]{64}$'`),
+ ]);
+ 
+ // ═══════════════════════════════════════════════════════════════════════════
+diff --git a/tests/db-idempotency.test.ts b/tests/db-idempotency.test.ts
+index 01686e5..3ca8931 100644
+--- a/tests/db-idempotency.test.ts
++++ b/tests/db-idempotency.test.ts
+@@ -1,5 +1,5 @@
+ /**
+- * tests/db-idempotency.test.ts — Idempotency key tests
++ * tests/db-idempotency.test.ts -- Idempotency key tests
+  *
+  * Proves:
+  *   - video_jobs.idempotency_key is unique (duplicate rejected)
+@@ -47,10 +47,14 @@ async function cleanAll() {
+ 
+ beforeEach(async () => {
+   await cleanAll();
++  // Seed required providers for FK constraint
++  await pgClient`INSERT INTO providers (provider_id, name) VALUES ('runway', 'Runway') ON CONFLICT DO NOTHING`;
++  await pgClient`INSERT INTO providers (provider_id, name) VALUES ('test_provider', 'Test Provider') ON CONFLICT DO NOTHING`;
+ });
+ 
+ afterAll(async () => {
+   await cleanAll();
++  await pgClient`DELETE FROM providers`;
+   await pgClient.end();
+ });
+ 
+@@ -191,7 +195,7 @@ describe('provider_requests.provider_request_key uniqueness', () => {
+ // ═══════════════════════════════════════════════════════════════════════════
+ 
+ describe('artifacts.sha256 uniqueness (webhook + poller dedup)', () => {
+-  it('rejects duplicate sha256 — only one artifact record wins', async () => {
++  it('rejects duplicate sha256 -- only one artifact record wins', async () => {
+     await createJobWithEvent(db, {
+       jobId: 'idem-art-job-001',
+       idempotencyKey: 'idem-art-idem-001',
+diff --git a/tests/db-persistence.test.ts b/tests/db-persistence.test.ts
+index 819c8f0..0642112 100644
+--- a/tests/db-persistence.test.ts
++++ b/tests/db-persistence.test.ts
+@@ -1,5 +1,5 @@
+ /**
+- * tests/db-persistence.test.ts — Database persistence layer tests
++ * tests/db-persistence.test.ts -- Database persistence layer tests
+  *
+  * Tests all 6 transaction types, job lifecycle persistence, FK constraints,
+  * CHECK constraints, and query helpers.
+@@ -60,6 +60,11 @@ async function cleanAll() {
+ 
+ beforeEach(async () => {
+   await cleanAll();
++  // Seed required providers for FK constraint
++  await pgClient`INSERT INTO providers (provider_id, name) VALUES ('runway', 'Runway') ON CONFLICT DO NOTHING`;
++  await pgClient`INSERT INTO providers (provider_id, name) VALUES ('test_provider', 'Test Provider') ON CONFLICT DO NOTHING`;
++  await pgClient`INSERT INTO providers (provider_id, name) VALUES ('minimax', 'Minimax') ON CONFLICT DO NOTHING`;
++  await pgClient`INSERT INTO providers (provider_id, name) VALUES ('kling', 'Kling') ON CONFLICT DO NOTHING`;
+ });
+ 
+ afterAll(async () => {
+@@ -573,7 +578,7 @@ describe('Seed claims for proof', () => {
+     expect(allAudits.length).toBeGreaterThanOrEqual(5);
+   });
+ 
+-  it('is idempotent — running twice does not duplicate', async () => {
++  it('is idempotent -- running twice does not duplicate', async () => {
+     await seedClaimsForProof(db);
+     await seedClaimsForProof(db);
+ 
+diff --git a/tests/sql-injection-prevention.test.ts b/tests/sql-injection-prevention.test.ts
+index a639e0a..80cecc7 100644
+--- a/tests/sql-injection-prevention.test.ts
++++ b/tests/sql-injection-prevention.test.ts
+@@ -1,5 +1,5 @@
+ /**
+- * tests/sql-injection-prevention.test.ts — SQL injection prevention gate
++ * tests/sql-injection-prevention.test.ts -- SQL injection prevention gate
+  *
+  * Proves:
+  *   1. No raw string SQL interpolation with user input
+@@ -52,10 +52,14 @@ async function cleanAll() {
+ 
+ beforeEach(async () => {
+   await cleanAll();
++  // Seed required providers for FK constraint
++  await pgClient`INSERT INTO providers (provider_id, name) VALUES ('runway', 'Runway') ON CONFLICT DO NOTHING`;
++  await pgClient`INSERT INTO providers (provider_id, name) VALUES ('test_provider', 'Test Provider') ON CONFLICT DO NOTHING`;
+ });
+ 
+ afterAll(async () => {
+   await cleanAll();
++  await pgClient`DELETE FROM providers`;
+   await pgClient.end();
+ });
+ 
+@@ -118,9 +122,9 @@ describe('Static analysis: No raw SQL string interpolation', () => {
+     }
+ 
+     if (violations.length > 0) {
+-      console.error('SQL injection risk — raw SQL string interpolation found:');
++      console.error('SQL injection risk -- raw SQL string interpolation found:');
+       for (const v of violations) {
+-        console.error(`  ${v.file}:${v.line} — ${v.text}`);
++        console.error(`  ${v.file}:${v.line} -- ${v.text}`);
+       }
+     }
+ 
+@@ -191,15 +195,15 @@ describe('Runtime: Search endpoint does not concatenate SQL', () => {
+     expect(results.length).toBe(0);
+   });
+ 
+-  it('handles null byte injection safely — PostgreSQL rejects invalid encoding', async () => {
+-    // PostgreSQL rejects null bytes in UTF-8 — this is a database-level defense.
++  it('handles null byte injection safely -- PostgreSQL rejects invalid encoding', async () => {
++    // PostgreSQL rejects null bytes in UTF-8 -- this is a database-level defense.
+     // The query is still parameterized (not concatenated), so no SQL injection occurs.
+     // The error proves the input was sent as a parameter, not interpolated into SQL.
+     await expect(
+       searchJobsByPrompt(db, "test\0'; DROP TABLE video_jobs;--"),
+     ).rejects.toThrow();
+ 
+-    // Verify table still exists — no SQL injection occurred
++    // Verify table still exists -- no SQL injection occurred
+     const check = await pgClient`SELECT count(*)::int as cnt FROM video_jobs`;
+     expect(check[0]!.cnt).toBeGreaterThanOrEqual(1);
+   });
+
+2. GENERATED MIGRATION SQL
+═══════════════════════════════════════════════════════════════
+ALTER TABLE "provider_requests" ADD CONSTRAINT "provider_requests_provider_providers_provider_id_fk" FOREIGN KEY ("provider") REFERENCES "public"."providers"("provider_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "video_jobs" ADD CONSTRAINT "video_jobs_project_id_projects_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("project_id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "artifact_verifications" ADD CONSTRAINT "artifact_verifications_sha256_format_check" CHECK ("artifact_verifications"."artifact_sha256" ~ '^[a-f0-9]{64}$');--> statement-breakpoint
+ALTER TABLE "artifacts" ADD CONSTRAINT "artifacts_sha256_format_check" CHECK ("artifacts"."sha256" ~ '^[a-f0-9]{64}$');--> statement-breakpoint
+ALTER TABLE "provider_requests" ADD CONSTRAINT "provider_requests_status_check" CHECK ("provider_requests"."status" IN ('queued','submitted','running','succeeded','failed','cancelled'));
+3. MIGRATION APPLY LOG
+═══════════════════════════════════════════════════════════════
+db-migrate-deploy: Applying pending migrations...
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '42P06',
+  message: 'schema "drizzle" already exists, skipping',
+  file: 'schemacmds.c',
+  line: '131',
+  routine: 'CreateSchemaCommand'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '42P07',
+  message: 'relation "__drizzle_migrations" already exists, skipping',
+  file: 'parse_utilcmd.c',
+  line: '207',
+  routine: 'transformCreateStmt'
+}
+db-migrate-deploy: All migrations applied successfully.
+EXIT CODE: 0
+
+4. SCHEMA INTROSPECTION
+═══════════════════════════════════════════════════════════════
+--- \dt ---
+                 List of relations
+ Schema |          Name          | Type  |  Owner  
+--------+------------------------+-------+---------
+ public | artifact_verifications | table | t2vrank
+ public | artifacts              | table | t2vrank
+ public | audit_log              | table | t2vrank
+ public | claim_audits           | table | t2vrank
+ public | claim_sources          | table | t2vrank
+ public | claims                 | table | t2vrank
+ public | projects               | table | t2vrank
+ public | proof_gate_results     | table | t2vrank
+ public | proof_runs             | table | t2vrank
+ public | provider_requests      | table | t2vrank
+ public | providers              | table | t2vrank
+ public | safety_reviews         | table | t2vrank
+ public | users                  | table | t2vrank
+ public | video_job_events       | table | t2vrank
+ public | video_jobs             | table | t2vrank
+(15 rows)
+
+
+--- \d+ video_jobs ---
+                                                                     Table "public.video_jobs"
+      Column      |           Type           | Collation | Nullable |                Default                 | Storage  | Compression | Stats target | Description 
+------------------+--------------------------+-----------+----------+----------------------------------------+----------+-------------+--------------+-------------
+ id               | bigint                   |           | not null | nextval('video_jobs_id_seq'::regclass) | plain    |             |              | 
+ job_id           | text                     |           | not null |                                        | extended |             |              | 
+ idempotency_key  | text                     |           | not null |                                        | extended |             |              | 
+ project_id       | text                     |           |          |                                        | extended |             |              | 
+ user_prompt      | text                     |           | not null |                                        | extended |             |              | 
+ rewritten_prompt | text                     |           |          |                                        | extended |             |              | 
+ scene_plan       | jsonb                    |           | not null | '[]'::jsonb                            | extended |             |              | 
+ provider         | text                     |           |          |                                        | extended |             |              | 
+ model            | text                     |           |          |                                        | extended |             |              | 
+ provider_job_id  | text                     |           |          |                                        | extended |             |              | 
+ status           | text                     |           | not null |                                        | extended |             |              | 
+ decision         | text                     |           | not null |                                        | extended |             |              | 
+ cas_version      | integer                  |           | not null | 0                                      | plain    |             |              | 
+ created_at       | timestamp with time zone |           | not null | now()                                  | plain    |             |              | 
+ updated_at       | timestamp with time zone |           | not null | now()                                  | plain    |             |              | 
+Indexes:
+    "video_jobs_pkey" PRIMARY KEY, btree (id)
+    "video_jobs_idempotency_key_unique" UNIQUE CONSTRAINT, btree (idempotency_key)
+    "video_jobs_job_id_unique" UNIQUE CONSTRAINT, btree (job_id)
+Check constraints:
+    "video_jobs_decision_check" CHECK (decision = ANY (ARRAY['ALLOW'::text, 'HOLD'::text, 'FAIL_CLOSED'::text]))
+    "video_jobs_status_check" CHECK (status = ANY (ARRAY['queued'::text, 'planning'::text, 'submitted'::text, 'generating'::text, 'provider_completed'::text, 'downloading'::text, 'storing'::text, 'verifying'::text, 'completed'::text, 'held'::text, 'failed'::text]))
+Foreign-key constraints:
+    "video_jobs_project_id_projects_project_id_fk" FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE SET NULL
+Referenced by:
+    TABLE "artifact_verifications" CONSTRAINT "artifact_verifications_job_id_video_jobs_job_id_fk" FOREIGN KEY (job_id) REFERENCES video_jobs(job_id) ON DELETE CASCADE
+    TABLE "artifacts" CONSTRAINT "artifacts_job_id_video_jobs_job_id_fk" FOREIGN KEY (job_id) REFERENCES video_jobs(job_id) ON DELETE CASCADE
+    TABLE "provider_requests" CONSTRAINT "provider_requests_job_id_video_jobs_job_id_fk" FOREIGN KEY (job_id) REFERENCES video_jobs(job_id) ON DELETE CASCADE
+    TABLE "safety_reviews" CONSTRAINT "safety_reviews_job_id_video_jobs_job_id_fk" FOREIGN KEY (job_id) REFERENCES video_jobs(job_id) ON DELETE CASCADE
+    TABLE "video_job_events" CONSTRAINT "video_job_events_job_id_video_jobs_job_id_fk" FOREIGN KEY (job_id) REFERENCES video_jobs(job_id) ON DELETE CASCADE
+Triggers:
+    set_updated_at_video_jobs BEFORE UPDATE ON video_jobs FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at()
+Access method: heap
+
+
+--- \d+ provider_requests ---
+                                                                       Table "public.provider_requests"
+        Column        |           Type           | Collation | Nullable |                    Default                    | Storage  | Compression | Stats target | Description 
+----------------------+--------------------------+-----------+----------+-----------------------------------------------+----------+-------------+--------------+-------------
+ id                   | bigint                   |           | not null | nextval('provider_requests_id_seq'::regclass) | plain    |             |              | 
+ job_id               | text                     |           | not null |                                               | extended |             |              | 
+ provider             | text                     |           | not null |                                               | extended |             |              | 
+ model                | text                     |           | not null |                                               | extended |             |              | 
+ provider_job_id      | text                     |           |          |                                               | extended |             |              | 
+ provider_request_key | text                     |           | not null |                                               | extended |             |              | 
+ request_payload      | jsonb                    |           | not null |                                               | extended |             |              | 
+ response_payload     | jsonb                    |           |          |                                               | extended |             |              | 
+ status               | text                     |           | not null |                                               | extended |             |              | 
+ created_at           | timestamp with time zone |           | not null | now()                                         | plain    |             |              | 
+Indexes:
+    "provider_requests_pkey" PRIMARY KEY, btree (id)
+    "provider_requests_provider_job_unique" UNIQUE CONSTRAINT, btree (provider, provider_job_id)
+    "provider_requests_provider_request_key_unique" UNIQUE CONSTRAINT, btree (provider_request_key)
+Check constraints:
+    "provider_requests_status_check" CHECK (status = ANY (ARRAY['queued'::text, 'submitted'::text, 'running'::text, 'succeeded'::text, 'failed'::text, 'cancelled'::text]))
+Foreign-key constraints:
+    "provider_requests_job_id_video_jobs_job_id_fk" FOREIGN KEY (job_id) REFERENCES video_jobs(job_id) ON DELETE CASCADE
+    "provider_requests_provider_providers_provider_id_fk" FOREIGN KEY (provider) REFERENCES providers(provider_id)
+Access method: heap
+
+
+--- \d+ artifacts ---
+                                                                   Table "public.artifacts"
+    Column    |           Type           | Collation | Nullable |                Default                | Storage  | Compression | Stats target | Description 
+--------------+--------------------------+-----------+----------+---------------------------------------+----------+-------------+--------------+-------------
+ id           | bigint                   |           | not null | nextval('artifacts_id_seq'::regclass) | plain    |             |              | 
+ job_id       | text                     |           | not null |                                       | extended |             |              | 
+ artifact_url | text                     |           | not null |                                       | extended |             |              | 
+ storage_key  | text                     |           | not null |                                       | extended |             |              | 
+ sha256       | text                     |           | not null |                                       | extended |             |              | 
+ content_type | text                     |           | not null |                                       | extended |             |              | 
+ size_bytes   | bigint                   |           | not null |                                       | plain    |             |              | 
+ created_at   | timestamp with time zone |           | not null | now()                                 | plain    |             |              | 
+Indexes:
+    "artifacts_pkey" PRIMARY KEY, btree (id)
+    "artifacts_sha256_unique" UNIQUE CONSTRAINT, btree (sha256)
+    "artifacts_storage_key_unique" UNIQUE CONSTRAINT, btree (storage_key)
+Check constraints:
+    "artifacts_sha256_format_check" CHECK (sha256 ~ '^[a-f0-9]{64}$'::text)
+    "artifacts_size_check" CHECK (size_bytes > 0)
+Foreign-key constraints:
+    "artifacts_job_id_video_jobs_job_id_fk" FOREIGN KEY (job_id) REFERENCES video_jobs(job_id) ON DELETE CASCADE
+Referenced by:
+    TABLE "artifact_verifications" CONSTRAINT "artifact_verifications_artifact_sha256_artifacts_sha256_fk" FOREIGN KEY (artifact_sha256) REFERENCES artifacts(sha256)
+Access method: heap
+
+
+--- \d+ artifact_verifications ---
+                                                                      Table "public.artifact_verifications"
+       Column       |           Type           | Collation | Nullable |                      Default                       | Storage  | Compression | Stats target | Description 
+--------------------+--------------------------+-----------+----------+----------------------------------------------------+----------+-------------+--------------+-------------
+ id                 | bigint                   |           | not null | nextval('artifact_verifications_id_seq'::regclass) | plain    |             |              | 
+ job_id             | text                     |           | not null |                                                    | extended |             |              | 
+ artifact_sha256    | text                     |           | not null |                                                    | extended |             |              | 
+ verified           | boolean                  |           | not null | false                                              | plain    |             |              | 
+ verification_notes | text                     |           | not null | ''::text                                           | extended |             |              | 
+ created_at         | timestamp with time zone |           | not null | now()                                              | plain    |             |              | 
+Indexes:
+    "artifact_verifications_pkey" PRIMARY KEY, btree (id)
+Check constraints:
+    "artifact_verifications_sha256_check" CHECK (NOT (verified = true AND (artifact_sha256 IS NULL OR artifact_sha256 = ''::text)))
+    "artifact_verifications_sha256_format_check" CHECK (artifact_sha256 ~ '^[a-f0-9]{64}$'::text)
+Foreign-key constraints:
+    "artifact_verifications_artifact_sha256_artifacts_sha256_fk" FOREIGN KEY (artifact_sha256) REFERENCES artifacts(sha256)
+    "artifact_verifications_job_id_video_jobs_job_id_fk" FOREIGN KEY (job_id) REFERENCES video_jobs(job_id) ON DELETE CASCADE
+Access method: heap
+
+
+--- \d+ claim_audits ---
+                                                                      Table "public.claim_audits"
+       Column        |           Type           | Collation | Nullable |                 Default                  | Storage  | Compression | Stats target | Description 
+---------------------+--------------------------+-----------+----------+------------------------------------------+----------+-------------+--------------+-------------
+ id                  | bigint                   |           | not null | nextval('claim_audits_id_seq'::regclass) | plain    |             |              | 
+ claim_id            | text                     |           | not null |                                          | extended |             |              | 
+ confidence          | text                     |           | not null |                                          | extended |             |              | 
+ verification_status | text                     |           | not null |                                          | extended |             |              | 
+ notes               | text                     |           | not null |                                          | extended |             |              | 
+ ui_badge_expected   | text                     |           | not null |                                          | extended |             |              | 
+ created_at          | timestamp with time zone |           | not null | now()                                    | plain    |             |              | 
+Indexes:
+    "claim_audits_pkey" PRIMARY KEY, btree (id)
+Check constraints:
+    "claim_audits_confidence_check" CHECK (confidence = ANY (ARRAY['HIGH'::text, 'MEDIUM'::text, 'LOW'::text]))
+    "claim_audits_ui_badge_check" CHECK (ui_badge_expected = ANY (ARRAY['Verified'::text, 'Partial'::text, 'Needs Verification'::text]))
+    "claim_audits_verification_status_check" CHECK (verification_status = ANY (ARRAY['VERIFIED'::text, 'PARTIAL'::text, 'UNVERIFIED'::text]))
+Foreign-key constraints:
+    "claim_audits_claim_id_claims_claim_id_fk" FOREIGN KEY (claim_id) REFERENCES claims(claim_id) ON DELETE CASCADE
+Access method: heap
+
+
+--- \d+ proof_gate_results ---
+                                                                       Table "public.proof_gate_results"
+        Column        |           Type           | Collation | Nullable |                    Default                     | Storage  | Compression | Stats target | Description 
+----------------------+--------------------------+-----------+----------+------------------------------------------------+----------+-------------+--------------+-------------
+ id                   | bigint                   |           | not null | nextval('proof_gate_results_id_seq'::regclass) | plain    |             |              | 
+ run_id               | text                     |           | not null |                                                | extended |             |              | 
+ gate_name            | text                     |           | not null |                                                | extended |             |              | 
+ raw_exit_code        | integer                  |           | not null |                                                | plain    |             |              | 
+ normalized_exit_code | integer                  |           |          |                                                | plain    |             |              | 
+ verdict              | text                     |           | not null |                                                | extended |             |              | 
+ stdout_path          | text                     |           |          |                                                | extended |             |              | 
+ stderr_path          | text                     |           |          |                                                | extended |             |              | 
+ created_at           | timestamp with time zone |           | not null | now()                                          | plain    |             |              | 
+Indexes:
+    "proof_gate_results_pkey" PRIMARY KEY, btree (id)
+    "proof_gate_results_run_gate_unique" UNIQUE CONSTRAINT, btree (run_id, gate_name)
+Foreign-key constraints:
+    "proof_gate_results_run_id_proof_runs_run_id_fk" FOREIGN KEY (run_id) REFERENCES proof_runs(run_id) ON DELETE CASCADE
+Access method: heap
+
+
+--- triggers on video_jobs ---
+          tgname           | tgtype 
+---------------------------+--------
+ set_updated_at_video_jobs |     19
+(1 row)
+
+
+--- triggers on users ---
+        tgname        | tgtype 
+----------------------+--------
+ set_updated_at_users |     19
+(1 row)
+
+
+--- triggers on providers ---
+          tgname          | tgtype 
+--------------------------+--------
+ set_updated_at_providers |     19
+(1 row)
+
+
+--- triggers on projects ---
+         tgname          | tgtype 
+-------------------------+--------
+ set_updated_at_projects |     19
+(1 row)
+
+
+5. TEST OUTPUT (all tests)
+═══════════════════════════════════════════════════════════════
+
+> text2video-rank@1.0.0 test /home/ubuntu/aim-drag-v2
+> vitest run
+
+[1m[43m DEPRECATED [49m[22m [33m`test.poolOptions` was removed in Vitest 4. All previous `poolOptions` are now top-level options. Please, refer to the migration guide: https://vitest.dev/guide/migration#pool-rework[39m
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.5 [39m[90m/home/ubuntu/aim-drag-v2[39m
+
+ [32m✓[39m tests/db-persistence.test.ts [2m([22m[2m24 tests[22m[2m)[22m[33m 348[2mms[22m[39m
+ [32m✓[39m tests/updated-at-trigger.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 270[2mms[22m[39m
+ [32m✓[39m tests/sql-injection-prevention.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 212[2mms[22m[39m
+ [32m✓[39m tests/db-idempotency.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 156[2mms[22m[39m
+ [32m✓[39m tests/completed-job-verification.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 84[2mms[22m[39m
+ [32m✓[39m tests/video-control-plane.test.ts [2m([22m[2m79 tests[22m[2m)[22m[32m 40[2mms[22m[39m
+ [32m✓[39m tests/release-governance.test.ts [2m([22m[2m20 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m7 passed[39m[22m[90m (7)[39m
+[2m      Tests [22m [1m[32m155 passed[39m[22m[90m (155)[39m
+[2m   Start at [22m 17:04:18
+[2m   Duration [22m 3.35s[2m (transform 238ms, setup 0ms, import 1.32s, tests 1.12s, environment 1ms)[22m
+
+EXIT CODE: 0
+
+6. TYPECHECK OUTPUT
+═══════════════════════════════════════════════════════════════
+
+> text2video-rank@1.0.0 typecheck /home/ubuntu/aim-drag-v2
+> tsc -p tsconfig.build.json --noEmit && tsc -p tsconfig.server.json --noEmit
+
+EXIT CODE: 0
+
+7. BUILD OUTPUT
+═══════════════════════════════════════════════════════════════
+
+> text2video-rank@1.0.0 build /home/ubuntu/aim-drag-v2
+> pnpm build:web && pnpm build:server
+
+
+> text2video-rank@1.0.0 build:web /home/ubuntu/aim-drag-v2
+> tsc -p tsconfig.build.json
+
+
+> text2video-rank@1.0.0 build:server /home/ubuntu/aim-drag-v2
+> node scripts/build-server.mjs
+
+build-server: dist-server/index.js written successfully.
+EXIT CODE: 0
+
+8. TYPOGRAPHIC DASH SCAN
+═══════════════════════════════════════════════════════════════
+=== TYPOGRAPHIC DASH SCAN ===
+Scanned targets: package.json, tsconfig.json, tsconfig.base.json, tsconfig.build.json, tsconfig.server.json, tsconfig.test.json, scripts, app, components, lib, shared, data, server
+Extensions: .json, .ts, .tsx, .js, .jsx, .mjs, .cjs, .mts, .md
+
+RESULT: PASS - No typographic dashes found
+Exit code: 0
+RAW EXIT CODE: 0
+NORMALIZED EXIT CODE: 0
+
+9. REMAINING GATES
+═══════════════════════════════════════════════════════════════
+--- REPO PATH ---
+/home/ubuntu/aim-drag-v2
+EXIT: 0
+
+--- PACKAGE NAME ---
+text2video-rank
+EXIT: 0
+
+--- DATABASE URL MODE ---
+DATABASE_URL=postgresql://[REDACTED]@localhost:5432/text2video_rank
+EXIT: 0
+
+--- MIGRATION FILE LIST ---
+-rw-rw-r-- 1 ubuntu ubuntu 9328 Apr 27 21:00 drizzle/0000_glorious_prodigy.sql
+-rw-rw-r-- 1 ubuntu ubuntu  983 Apr 28 16:58 drizzle/0001_bored_outlaw_kid.sql
+EXIT: 0
+
+--- DB GENERATE ---
+users 6 columns 0 indexes 0 fks
+video_job_events 5 columns 0 indexes 1 fks
+video_jobs 15 columns 0 indexes 1 fks
+
+No schema changes, nothing to migrate 😴
+EXIT: 0
+
+--- DB CHECK ---
+db-check: Verifying database schema...
+  ✓ users
+  ✓ projects
+  ✓ video_jobs
+  ✓ video_job_events
+  ✓ providers
+  ✓ provider_requests
+  ✓ artifacts
+  ✓ artifact_verifications
+  ✓ claims
+  ✓ claim_sources
+  ✓ claim_audits
+  ✓ safety_reviews
+  ✓ proof_runs
+  ✓ proof_gate_results
+  ✓ audit_log
+
+  CHECK constraints: 111
+  UNIQUE constraints: 13
+  FOREIGN KEY constraints: 12
+
+db-check: PASS -- all 15 tables present with required constraints.
+EXIT: 0
+
+--- DB TEST ---
+
+> text2video-rank@1.0.0 test:db /home/ubuntu/aim-drag-v2
+> vitest run tests/db-persistence.test.ts
+
+[1m[43m DEPRECATED [49m[22m [33m`test.poolOptions` was removed in Vitest 4. All previous `poolOptions` are now top-level options. Please, refer to the migration guide: https://vitest.dev/guide/migration#pool-rework[39m
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.5 [39m[90m/home/ubuntu/aim-drag-v2[39m
+
+ [32m✓[39m tests/db-persistence.test.ts [2m([22m[2m24 tests[22m[2m)[22m[33m 366[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m24 passed[39m[22m[90m (24)[39m
+[2m   Start at [22m 17:04:28
+[2m   Duration [22m 834ms[2m (transform 90ms, setup 0ms, import 324ms, tests 366ms, environment 0ms)[22m
+
+EXIT: 0
+
+--- IDEMPOTENCY TEST ---
+
+> text2video-rank@1.0.0 test:idempotency /home/ubuntu/aim-drag-v2
+> vitest run tests/db-idempotency.test.ts
+
+[1m[43m DEPRECATED [49m[22m [33m`test.poolOptions` was removed in Vitest 4. All previous `poolOptions` are now top-level options. Please, refer to the migration guide: https://vitest.dev/guide/migration#pool-rework[39m
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.5 [39m[90m/home/ubuntu/aim-drag-v2[39m
+
+ [32m✓[39m tests/db-idempotency.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 207[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m9 passed[39m[22m[90m (9)[39m
+[2m   Start at [22m 17:04:29
+[2m   Duration [22m 609ms[2m (transform 82ms, setup 0ms, import 267ms, tests 207ms, environment 0ms)[22m
+
+EXIT: 0
+
+--- SQL INJECTION TEST ---
+
+> text2video-rank@1.0.0 test:sql-injection /home/ubuntu/aim-drag-v2
+> vitest run tests/sql-injection-prevention.test.ts
+
+[1m[43m DEPRECATED [49m[22m [33m`test.poolOptions` was removed in Vitest 4. All previous `poolOptions` are now top-level options. Please, refer to the migration guide: https://vitest.dev/guide/migration#pool-rework[39m
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.5 [39m[90m/home/ubuntu/aim-drag-v2[39m
+
+ [32m✓[39m tests/sql-injection-prevention.test.ts [2m([22m[2m14 tests[22m[2m)[22m[33m 342[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m14 passed[39m[22m[90m (14)[39m
+[2m   Start at [22m 17:04:31
+[2m   Duration [22m 856ms[2m (transform 103ms, setup 0ms, import 344ms, tests 342ms, environment 0ms)[22m
+
+EXIT: 0
+
+--- COMPLETED-JOB VERIFICATION TEST ---
+
+> text2video-rank@1.0.0 test:completed-job /home/ubuntu/aim-drag-v2
+> vitest run tests/completed-job-verification.test.ts
+
+[1m[43m DEPRECATED [49m[22m [33m`test.poolOptions` was removed in Vitest 4. All previous `poolOptions` are now top-level options. Please, refer to the migration guide: https://vitest.dev/guide/migration#pool-rework[39m
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.5 [39m[90m/home/ubuntu/aim-drag-v2[39m
+
+ [32m✓[39m tests/completed-job-verification.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 90[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m5 passed[39m[22m[90m (5)[39m
+[2m   Start at [22m 17:04:32
+[2m   Duration [22m 480ms[2m (transform 73ms, setup 0ms, import 263ms, tests 90ms, environment 0ms)[22m
+
+EXIT: 0
+
+--- UPDATED-AT TRIGGER TEST ---
+
+> text2video-rank@1.0.0 test:updated-at /home/ubuntu/aim-drag-v2
+> vitest run tests/updated-at-trigger.test.ts
+
+[1m[43m DEPRECATED [49m[22m [33m`test.poolOptions` was removed in Vitest 4. All previous `poolOptions` are now top-level options. Please, refer to the migration guide: https://vitest.dev/guide/migration#pool-rework[39m
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.5 [39m[90m/home/ubuntu/aim-drag-v2[39m
+
+ [32m✓[39m tests/updated-at-trigger.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 270[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m4 passed[39m[22m[90m (4)[39m
+[2m   Start at [22m 17:04:33
+[2m   Duration [22m 655ms[2m (transform 63ms, setup 0ms, import 250ms, tests 270ms, environment 0ms)[22m
+
+EXIT: 0
+
+--- CLAIM AUDIT DB BACKED ---
+seed-claims: Seeding database-backed claims...
+  ✓ claim_db_001 -- inserted
+  ✓ claim_db_002 -- inserted
+  ✓ claim_db_003 -- inserted
+  ✓ claim_db_004 -- inserted
+  ✓ claim_db_005 -- inserted
+seed-claims: Done.
+claim-audit-db-check: Database claim records:
+  claims: 5
+  claim_sources: 5
+  claim_audits: 5
+
+  Linked claim_audits → claims: 5 records
+    claim_db_001: VERIFIED (HIGH) → "PostgreSQL enforces CHECK constraints at the database level..."
+    claim_db_002: VERIFIED (HIGH) → "Drizzle ORM uses parameterized queries preventing SQL inject..."
+    claim_db_003: VERIFIED (HIGH) → "OWASP recommends parameterized queries as primary SQL inject..."
+    claim_db_004: VERIFIED (HIGH) → "Drizzle-kit generate produces forward-only SQL migrations..."
+    claim_db_005: VERIFIED (HIGH) → "Foreign key constraints enforce referential integrity betwee..."
+
+  Linked claim_sources → claims: 5 records
+    claim_db_001: PostgreSQL Documentation -- Constraints → https://www.postgresql.org/docs/current/ddl-constraints.html
+    claim_db_002: Drizzle ORM -- SQL Module Documentation → https://orm.drizzle.team/docs/sql
+    claim_db_003: OWASP SQL Injection Prevention Cheat Sheet → https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html
+    claim_db_004: Drizzle Kit -- Overview → https://orm.drizzle.team/docs/kit-overview
+    claim_db_005: PostgreSQL Documentation -- Foreign Keys → https://www.postgresql.org/docs/current/ddl-constraints.html#DDL-CONSTRAINTS-FK
+
+claim-audit-db-check: PASS -- claims are database-backed with FK linkage.
+EXIT: 0
+
+--- PROOF PACKAGE DB SECTION ---
+  ✓ Database Provider
+  ✓ Migration Strategy
+  ✓ Schema Tables
+  ✓ Constraint List
+  ✓ Foreign Key List
+  ✓ Unique Index List
+  ✓ Transaction Map
+  ✓ Idempotency Map
+  ✓ SQL Injection Prevention
+  ✓ Rollback Behavior
+
+proof-package-db-check: PASS -- all required database sections present.
+EXIT: 0
+
+--- AST GATE ---
+
+> text2video-rank@1.0.0 ast:gate /home/ubuntu/aim-drag-v2
+> node scripts/ast-gate.mjs
+
+ast-gate: Scanning 26 TypeScript files...
+
+Files scanned:
+  ✓ drizzle.config.ts
+  ✓ lib/release-governance/authority-manager.ts
+  ✓ lib/release-governance/index.ts
+  ✓ lib/release-governance/state-machine.ts
+  ✓ lib/release-governance/types.ts
+  ✓ lib/release-governance/verifiers.ts
+  ✓ server/artifact-storage.ts
+  ✓ server/db/connection.ts
+  ✓ server/db/index.ts
+  ✓ server/db/repository.ts
+  ✓ server/db/schema.ts
+  ✓ server/index.ts
+  ✓ server/job-api.ts
+  ✓ server/provider-router.ts
+  ✓ server/safety-gate.ts
+  ✓ server/video-types.ts
+  ✓ server/vllm-planner.ts
+  ✓ server/worker-pipeline.ts
+  ✓ tests/completed-job-verification.test.ts
+  ✓ tests/db-idempotency.test.ts
+  ✓ tests/db-persistence.test.ts
+  ✓ tests/release-governance.test.ts
+  ✓ tests/sql-injection-prevention.test.ts
+  ✓ tests/updated-at-trigger.test.ts
+  ✓ tests/video-control-plane.test.ts
+  ✓ vitest.config.ts
+
+ast-gate: PASS -- 0 violations found.
+  26 files scanned.
+  No client-side provider calls.
+  No hardcoded secrets.
+  No unsafe .parse() in production paths.
+EXIT: 0
+
+--- DIST SERVER ---
+-rw-rw-r-- 1 ubuntu ubuntu 552068 Apr 28 17:04 dist-server/index.js
+EXIT: 0
+
+--- DIST WEB ---
+total 12
+drwxrwxr-x  3 ubuntu ubuntu 4096 Apr 27 21:08 .
+drwxrwxr-x 11 ubuntu ubuntu 4096 Apr 28 17:03 ..
+drwxrwxr-x  2 ubuntu ubuntu 4096 Apr 27 21:08 release-governance
+EXIT: 0
+
+--- SECRET SCAN ---
+audit-secrets: Scanned 15 files in [lib, dist-web]
+
+audit-secrets: CLEAN -- No secrets found in client code or dist-web.
+RAW: 0 NORMALIZED: 0
+
+--- PROVIDER BOUNDARY ---
+audit-providers: Scanned 15 client-facing files in [lib, dist-web]
+
+audit-providers: CLEAN -- No direct client-side AI provider calls found.
+RAW: 0 NORMALIZED: 0
+
+--- UNSAFE PARSE ---
+NORMALIZED: 0
+
+10. GIT REV-PARSE HEAD
+═══════════════════════════════════════════════════════════════
+7e045f9d3b0baf9e502f8d195d6a2ddce016abf1
+
+11. GIT STATUS --SHORT
+═══════════════════════════════════════════════════════════════
+ M drizzle/meta/_journal.json
+ M package.json
+ M scripts/ast-gate.mjs
+ M scripts/audit-claims.mjs
+ M scripts/audit-providers.mjs
+ M scripts/audit-secrets.mjs
+ M scripts/build-server.mjs
+ M scripts/claim-audit-db-check.mjs
+ M scripts/db-check.mjs
+ M scripts/db-migrate-deploy.mjs
+ M scripts/db-proof.mjs
+ M scripts/guard-db-env.mjs
+ M scripts/proof-package-db-check.mjs
+ M scripts/seed-claims.mjs
+ M server/artifact-storage.ts
+ M server/db/connection.ts
+ M server/db/index.ts
+ M server/db/repository.ts
+ M server/db/schema.ts
+ M server/index.ts
+ M server/job-api.ts
+ M server/provider-router.ts
+ M server/safety-gate.ts
+ M server/video-types.ts
+ M server/vllm-planner.ts
+ M server/worker-pipeline.ts
+ M tests/db-idempotency.test.ts
+ M tests/db-persistence.test.ts
+ M tests/sql-injection-prevention.test.ts
+?? PROOF_OUTPUT_V2.txt
+?? drizzle/0001_bored_outlaw_kid.sql
+?? drizzle/meta/0001_snapshot.json
+?? scripts/create-updated-at-triggers.sql
+?? scripts/typo-dash-scan.mjs
+?? tests/completed-job-verification.test.ts
+?? tests/updated-at-trigger.test.ts
+
+═══════════════════════════════════════════════════════════════
+FINAL GATE TABLE
+═══════════════════════════════════════════════════════════════
+| # | Gate | Exit | Verdict |
+|---|------|------|---------|
+| 1 | REPO PATH | 0 | PASS |
+| 2 | PACKAGE NAME | 0 | PASS |
+| 3 | DATABASE URL MODE | 0 | PASS |
+| 4 | MIGRATION FILE LIST | 0 | PASS |
+| 5 | DB GENERATE | 0 | PASS |
+| 6 | DB MIGRATE DEPLOY | 0 | PASS |
+| 7 | DB CHECK | 0 | PASS |
+| 8 | DB TEST | 0 | PASS |
+| 9 | IDEMPOTENCY TEST | 0 | PASS |
+| 10 | SQL INJECTION TEST | 0 | PASS |
+| 11 | CLAIM AUDIT DB BACKED | 0 | PASS |
+| 12 | PROOF PACKAGE DB SECTION | 0 | PASS |
+| 13 | TYPECHECK | 0 | PASS |
+| 14 | TEST (all 155) | 0 | PASS |
+| 15 | AST GATE | 0 | PASS |
+| 16 | BUILD | 0 | PASS |
+| 17 | DIST SERVER | 0 | PASS |
+| 18 | DIST WEB | 0 | PASS |
+| 19 | SECRET SCAN | 0->0 | PASS (normalized) |
+| 20 | PROVIDER BOUNDARY | 0->0 | PASS (normalized) |
+| 21 | UNSAFE PARSE | 0->0 | PASS |
+| 22 | TYPOGRAPHIC DASH SCAN | 0 | PASS |
+| 23 | COMPLETED-JOB VERIFICATION TEST | 0 | PASS |
+| 24 | UPDATED-AT TRIGGER TEST | 0 | PASS |
+
+═══════════════════════════════════════════════════════════════
+FINAL AIM DRAG DECISION
+═══════════════════════════════════════════════════════════════
+  DECISION: ALLOW
+  All gates passed. Schema fixes and typographic dash scan verified.
+═══════════════════════════════════════════════════════════════
+END OF PROOF
+═══════════════════════════════════════════════════════════════

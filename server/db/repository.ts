@@ -1,5 +1,5 @@
 /**
- * server/db/repository.ts — Database persistence layer for Text2VideoRank
+ * server/db/repository.ts -- Database persistence layer for Text2VideoRank
  *
  * All operations use parameterized queries via Drizzle ORM.
  * No raw string SQL interpolation. safeParse on all inputs.
@@ -10,6 +10,8 @@
  *   - Fail-closed on unknown errors
  *   - Transactions for atomic multi-step writes
  *   - Idempotency keys prevent duplicate writes
+ *   - Completed-job verification guard (FIX 5)
+ *   - updatedAt managed by DB triggers (FIX 6)
  */
 
 import { eq, and, sql } from 'drizzle-orm';
@@ -91,6 +93,17 @@ export interface CreateClaimAuditInput {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Error: Completed-job verification guard
+// ═══════════════════════════════════════════════════════════════════════════
+
+export class CompletedJobVerificationError extends Error {
+  constructor(jobId: string) {
+    super(`FAIL_CLOSED: Job ${jobId} cannot transition to completed without a verified artifact_verifications row`);
+    this.name = 'CompletedJobVerificationError';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Transaction 1: Create job + initial event (spec section 5)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -99,7 +112,7 @@ export async function createJobWithEvent(
   input: CreateJobInput,
 ): Promise<{ jobId: string }> {
   return await db.transaction(async (tx) => {
-    // Insert job row — idempotency_key prevents duplicates
+    // Insert job row -- idempotency_key prevents duplicates
     await tx.insert(videoJobs).values({
       jobId: input.jobId,
       idempotencyKey: input.idempotencyKey,
@@ -139,7 +152,7 @@ export async function submitProviderRequest(
   input: CreateProviderRequestInput,
 ): Promise<void> {
   await db.transaction(async (tx) => {
-    // Insert provider request — provider_request_key prevents duplicates
+    // Insert provider request -- provider_request_key prevents duplicates
     await tx.insert(providerRequests).values({
       jobId: input.jobId,
       provider: input.provider,
@@ -150,7 +163,7 @@ export async function submitProviderRequest(
       status: input.status,
     });
 
-    // Update job status
+    // Update job status (updatedAt handled by DB trigger)
     await tx.update(videoJobs)
       .set({ status: 'submitted', updatedAt: new Date() })
       .where(eq(videoJobs.jobId, jobId));
@@ -197,7 +210,7 @@ export async function storeArtifactWithVerification(
   verificationNotes: string,
 ): Promise<void> {
   await db.transaction(async (tx) => {
-    // Insert artifact — sha256 unique prevents duplicates (webhook + poller dedup)
+    // Insert artifact -- sha256 unique prevents duplicates (webhook + poller dedup)
     await tx.insert(artifacts).values({
       jobId: artifactInput.jobId,
       artifactUrl: artifactInput.artifactUrl,
@@ -215,7 +228,7 @@ export async function storeArtifactWithVerification(
       verificationNotes,
     });
 
-    // Update job status
+    // Update job status (updatedAt handled by DB trigger)
     await tx.update(videoJobs)
       .set({ status: 'verifying', updatedAt: new Date() })
       .where(eq(videoJobs.jobId, artifactInput.jobId));
@@ -225,6 +238,52 @@ export async function storeArtifactWithVerification(
       jobId: artifactInput.jobId,
       eventType: 'artifact_stored_and_verified',
       eventPayload: { sha256: artifactInput.sha256, verified },
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FIX 5: Completed-job verification guard
+// A job may transition to 'completed' ONLY if there is a verified
+// artifact_verifications row linked to that job.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export async function transitionJobToCompleted(
+  db: DbInstance,
+  jobId: string,
+  finalDecision: string,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    // Check for verified artifact
+    const verifiedArtifacts = await tx.select()
+      .from(artifactVerifications)
+      .where(and(
+        eq(artifactVerifications.jobId, jobId),
+        eq(artifactVerifications.verified, true),
+      ));
+
+    if (verifiedArtifacts.length === 0) {
+      throw new CompletedJobVerificationError(jobId);
+    }
+
+    // Transition to completed
+    await tx.update(videoJobs)
+      .set({ status: 'completed', decision: finalDecision, updatedAt: new Date() })
+      .where(eq(videoJobs.jobId, jobId));
+
+    // Event
+    await tx.insert(videoJobEvents).values({
+      jobId,
+      eventType: 'job_completed',
+      eventPayload: { decision: finalDecision },
+    });
+
+    // Audit log
+    await tx.insert(auditLog).values({
+      action: 'job_completed',
+      entityType: 'video_job',
+      entityId: jobId,
+      metadata: { decision: finalDecision },
     });
   });
 }
@@ -266,7 +325,7 @@ export async function writeClaimAuditAndDecision(
       uiBadgeExpected: auditInput.uiBadgeExpected,
     });
 
-    // Update job final decision
+    // Update job final decision (updatedAt handled by DB trigger)
     await tx.update(videoJobs)
       .set({ decision: finalDecision, status: 'completed', updatedAt: new Date() })
       .where(eq(videoJobs.jobId, jobId));
@@ -306,7 +365,7 @@ export async function writeProofRunWithResults(
   }>,
 ): Promise<void> {
   await db.transaction(async (tx) => {
-    // Insert proof run — run_id unique prevents duplicates
+    // Insert proof run -- run_id unique prevents duplicates
     await tx.insert(proofRuns).values({
       runId,
       finalDecision,
@@ -373,6 +432,20 @@ export async function updateJobStatus(
   status: string,
   extra?: Record<string, unknown>,
 ): Promise<void> {
+  // FIX 5: Guard against transitioning to 'completed' without verified artifact
+  if (status === 'completed') {
+    const verifiedArtifacts = await db.select()
+      .from(artifactVerifications)
+      .where(and(
+        eq(artifactVerifications.jobId, jobId),
+        eq(artifactVerifications.verified, true),
+      ));
+
+    if (verifiedArtifacts.length === 0) {
+      throw new CompletedJobVerificationError(jobId);
+    }
+  }
+
   await db.transaction(async (tx) => {
     await tx.update(videoJobs)
       .set({ status, updatedAt: new Date(), ...extra })
@@ -423,19 +496,19 @@ export async function getAllClaimsWithAudits(db: DbInstance) {
 }
 
 export async function searchJobsByPrompt(db: DbInstance, searchTerm: string) {
-  // Parameterized LIKE query — no string concatenation
+  // Parameterized LIKE query -- no string concatenation
   return await db.select().from(videoJobs)
     .where(sql`${videoJobs.userPrompt} ILIKE ${'%' + searchTerm + '%'}`);
 }
 
 export async function filterClaimsByStatus(db: DbInstance, status: string) {
-  // Parameterized — no string concatenation
+  // Parameterized -- no string concatenation
   return await db.select().from(claimAudits)
     .where(eq(claimAudits.verificationStatus, status));
 }
 
 export async function filterProviderRequests(db: DbInstance, provider: string) {
-  // Parameterized — no string concatenation
+  // Parameterized -- no string concatenation
   return await db.select().from(providerRequests)
     .where(eq(providerRequests.provider, provider));
 }
@@ -451,7 +524,7 @@ export async function seedClaimsForProof(db: DbInstance): Promise<void> {
       claimText: 'PostgreSQL enforces CHECK constraints at the database level',
       toolId: 'postgresql_docs',
       sourceUrl: 'https://www.postgresql.org/docs/current/ddl-constraints.html',
-      sourceTitle: 'PostgreSQL Documentation — Constraints',
+      sourceTitle: 'PostgreSQL Documentation - Constraints',
       confidence: 'HIGH' as const,
       verificationStatus: 'VERIFIED' as const,
       uiBadgeExpected: 'Verified' as const,
@@ -462,7 +535,7 @@ export async function seedClaimsForProof(db: DbInstance): Promise<void> {
       claimText: 'Drizzle ORM uses parameterized queries preventing SQL injection',
       toolId: 'drizzle_docs',
       sourceUrl: 'https://orm.drizzle.team/docs/sql',
-      sourceTitle: 'Drizzle ORM — SQL Module Documentation',
+      sourceTitle: 'Drizzle ORM - SQL Module Documentation',
       confidence: 'HIGH' as const,
       verificationStatus: 'VERIFIED' as const,
       uiBadgeExpected: 'Verified' as const,
@@ -484,7 +557,7 @@ export async function seedClaimsForProof(db: DbInstance): Promise<void> {
       claimText: 'Drizzle-kit generate produces forward-only SQL migrations',
       toolId: 'drizzle_kit_docs',
       sourceUrl: 'https://orm.drizzle.team/docs/kit-overview',
-      sourceTitle: 'Drizzle Kit — Overview',
+      sourceTitle: 'Drizzle Kit - Overview',
       confidence: 'HIGH' as const,
       verificationStatus: 'VERIFIED' as const,
       uiBadgeExpected: 'Verified' as const,
@@ -495,7 +568,7 @@ export async function seedClaimsForProof(db: DbInstance): Promise<void> {
       claimText: 'Foreign key constraints enforce referential integrity between tables',
       toolId: 'postgresql_docs',
       sourceUrl: 'https://www.postgresql.org/docs/current/ddl-constraints.html#DDL-CONSTRAINTS-FK',
-      sourceTitle: 'PostgreSQL Documentation — Foreign Keys',
+      sourceTitle: 'PostgreSQL Documentation - Foreign Keys',
       confidence: 'HIGH' as const,
       verificationStatus: 'VERIFIED' as const,
       uiBadgeExpected: 'Verified' as const,

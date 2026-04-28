@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * scripts/build-server.mjs — Build the custom Node server with esbuild
+ * scripts/build-server.mjs -- Build the custom Node server with esbuild
  *
  * Outputs a single file to dist-server/index.js.
  * Externalizes node: built-ins. Bundles everything else.
@@ -22,7 +22,7 @@ await build({
   minify: false,
   external: ['node:*'],
   banner: {
-    js: '// text2video-rank server — built by esbuild\n',
+    js: '// text2video-rank server -- built by esbuild\n',
   },
 });
 

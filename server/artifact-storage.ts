@@ -1,5 +1,5 @@
 /**
- * server/artifact-storage.ts — Artifact Storage Contract for Text2VideoRank
+ * server/artifact-storage.ts -- Artifact Storage Contract for Text2VideoRank
  *
  * Download MP4 from provider → SHA-256 hash → Store in object storage → Verify → Evidence record
  *

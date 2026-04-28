@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * scripts/ast-gate.mjs — AST enforcement gate for TypeScript
+ * scripts/ast-gate.mjs -- AST enforcement gate for TypeScript
  *
  * Uses TypeScript compiler API to parse source files and enforce rules:
  *   1. No direct client-side provider calls (fetch to OpenAI/Anthropic/Replicate)
  *   2. No secrets/API keys in client-facing code
- *   3. No UseCaseSchema.parse() — must use safeParse in production paths
+ *   3. No UseCaseSchema.parse() -- must use safeParse in production paths
  *   4. All public claims must have source metadata
  *   5. No hardcoded secrets (API keys, tokens)
  *
@@ -90,7 +90,7 @@ function visitNode(node, sourceFile, filePath) {
           file: rel,
           line,
           rule: 'SAFE_PARSE_REQUIRED',
-          message: `${objectText}.parse() found — must use ${objectText}.safeParse() in production data paths`,
+          message: `${objectText}.parse() found -- must use ${objectText}.safeParse() in production data paths`,
         });
       }
     }
@@ -120,7 +120,7 @@ function visitNode(node, sourceFile, filePath) {
           file: rel,
           line,
           rule: 'CLIENT_PROVIDER_CALL',
-          message: `Client-side reference to AI provider domain "${domain}" — all provider calls must go through the server`,
+          message: `Client-side reference to AI provider domain "${domain}" -- all provider calls must go through the server`,
         });
       }
     }
@@ -163,14 +163,14 @@ for (const f of SCANNED) {
 console.log('');
 
 if (VIOLATIONS.length === 0) {
-  console.log('ast-gate: PASS — 0 violations found.');
+  console.log('ast-gate: PASS -- 0 violations found.');
   console.log(`  ${SCANNED.length} files scanned.`);
   console.log('  No client-side provider calls.');
   console.log('  No hardcoded secrets.');
   console.log('  No unsafe .parse() in production paths.');
   process.exit(0);
 } else {
-  console.error(`ast-gate: FAIL — ${VIOLATIONS.length} violation(s) found:\n`);
+  console.error(`ast-gate: FAIL -- ${VIOLATIONS.length} violation(s) found:\n`);
   for (const v of VIOLATIONS) {
     console.error(`  ✗ [${v.rule}] ${v.file}:${v.line}`);
     console.error(`    ${v.message}\n`);

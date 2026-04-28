@@ -1,5 +1,5 @@
 /**
- * server/safety-gate.ts — Safety Gate for Text2VideoRank
+ * server/safety-gate.ts -- Safety Gate for Text2VideoRank
  *
  * Scans prompts for: public figures, private persons, copyrighted characters,
  * explicit content, medical/legal claims.

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * scripts/claim-audit-db-check.mjs — Proves claims are database-backed, not static
+ * scripts/claim-audit-db-check.mjs -- Proves claims are database-backed, not static
  *
  * Queries claims, claim_sources, and claim_audits tables to verify:
  * 1. Records exist in the database
@@ -31,7 +31,7 @@ try {
   console.log(`  claim_audits: ${claimAuditCount[0].cnt}`);
 
   if (claimCount[0].cnt === 0 || claimAuditCount[0].cnt === 0) {
-    console.error('claim-audit-db-check: FAIL — no claim records in database.');
+    console.error('claim-audit-db-check: FAIL -- no claim records in database.');
     await client.end();
     process.exit(1);
   }
@@ -62,11 +62,11 @@ try {
     console.log(`    ${row.claim_id}: ${row.source_title} → ${row.source_url}`);
   }
 
-  console.log('\nclaim-audit-db-check: PASS — claims are database-backed with FK linkage.');
+  console.log('\nclaim-audit-db-check: PASS -- claims are database-backed with FK linkage.');
   await client.end();
   process.exit(0);
 } catch (err) {
-  console.error('claim-audit-db-check: FAIL —', err.message);
+  console.error('claim-audit-db-check: FAIL --', err.message);
   await client.end();
   process.exit(1);
 }

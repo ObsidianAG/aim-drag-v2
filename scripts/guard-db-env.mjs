@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * scripts/guard-db-env.mjs — Database migration environment guard
+ * scripts/guard-db-env.mjs -- Database migration environment guard
  *
  * Blocks `db:migrate` unless the operator explicitly sets
  * DB_MIGRATE_CONFIRMED=1 and provides a valid DATABASE_URL.

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * scripts/seed-claims.mjs — Seed database-backed claims for proof
+ * scripts/seed-claims.mjs -- Seed database-backed claims for proof
  *
  * Inserts claims, claim_sources, and claim_audits into the database.
- * Idempotent — skips existing records.
+ * Idempotent -- skips existing records.
  */
 
 import postgres from 'postgres';
@@ -22,7 +22,7 @@ const claimData = [
     claimText: 'PostgreSQL enforces CHECK constraints at the database level',
     toolId: 'postgresql_docs',
     sourceUrl: 'https://www.postgresql.org/docs/current/ddl-constraints.html',
-    sourceTitle: 'PostgreSQL Documentation — Constraints',
+    sourceTitle: 'PostgreSQL Documentation -- Constraints',
     confidence: 'HIGH',
     verificationStatus: 'VERIFIED',
     uiBadgeExpected: 'Verified',
@@ -33,7 +33,7 @@ const claimData = [
     claimText: 'Drizzle ORM uses parameterized queries preventing SQL injection',
     toolId: 'drizzle_docs',
     sourceUrl: 'https://orm.drizzle.team/docs/sql',
-    sourceTitle: 'Drizzle ORM — SQL Module Documentation',
+    sourceTitle: 'Drizzle ORM -- SQL Module Documentation',
     confidence: 'HIGH',
     verificationStatus: 'VERIFIED',
     uiBadgeExpected: 'Verified',
@@ -55,7 +55,7 @@ const claimData = [
     claimText: 'Drizzle-kit generate produces forward-only SQL migrations',
     toolId: 'drizzle_kit_docs',
     sourceUrl: 'https://orm.drizzle.team/docs/kit-overview',
-    sourceTitle: 'Drizzle Kit — Overview',
+    sourceTitle: 'Drizzle Kit -- Overview',
     confidence: 'HIGH',
     verificationStatus: 'VERIFIED',
     uiBadgeExpected: 'Verified',
@@ -66,7 +66,7 @@ const claimData = [
     claimText: 'Foreign key constraints enforce referential integrity between tables',
     toolId: 'postgresql_docs',
     sourceUrl: 'https://www.postgresql.org/docs/current/ddl-constraints.html#DDL-CONSTRAINTS-FK',
-    sourceTitle: 'PostgreSQL Documentation — Foreign Keys',
+    sourceTitle: 'PostgreSQL Documentation -- Foreign Keys',
     confidence: 'HIGH',
     verificationStatus: 'VERIFIED',
     uiBadgeExpected: 'Verified',
@@ -81,7 +81,7 @@ try {
     // Check if already exists
     const existing = await client`SELECT claim_id FROM claims WHERE claim_id = ${c.claimId}`;
     if (existing.length > 0) {
-      console.log(`  ⊘ ${c.claimId} — already exists, skipping`);
+      console.log(`  ⊘ ${c.claimId} -- already exists, skipping`);
       continue;
     }
 
@@ -91,14 +91,14 @@ try {
       await tx`INSERT INTO claim_audits (claim_id, confidence, verification_status, notes, ui_badge_expected) VALUES (${c.claimId}, ${c.confidence}, ${c.verificationStatus}, ${c.notes}, ${c.uiBadgeExpected})`;
     });
 
-    console.log(`  ✓ ${c.claimId} — inserted`);
+    console.log(`  ✓ ${c.claimId} -- inserted`);
   }
 
   console.log('seed-claims: Done.');
   await client.end();
   process.exit(0);
 } catch (err) {
-  console.error('seed-claims: FAIL —', err.message);
+  console.error('seed-claims: FAIL --', err.message);
   await client.end();
   process.exit(1);
 }

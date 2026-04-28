@@ -1,9 +1,9 @@
 /**
- * server/provider-router.ts — Provider Router for Text2VideoRank
+ * server/provider-router.ts -- Provider Router for Text2VideoRank
  *
  * Routes video jobs to: openai_sora, google_veo, runway, fallback
  * Each provider has a circuit breaker.
- * No real API calls — interface + stub implementation.
+ * No real API calls -- interface + stub implementation.
  *
  * AIM DRAG: observe → decide → enforce → prove
  */
@@ -30,7 +30,7 @@ export interface ProviderSelection {
 }
 
 /**
- * selectProvider — route each job to the best provider.
+ * selectProvider -- route each job to the best provider.
  * Exactly as specified in section 9 of the spec.
  */
 export function selectProvider(input: ProviderSelectionInput): ProviderSelection {

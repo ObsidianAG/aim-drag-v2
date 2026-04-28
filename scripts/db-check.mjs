@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * scripts/db-check.mjs — Database schema check
+ * scripts/db-check.mjs -- Database schema check
  *
  * Verifies all 15 required tables exist in the database and have expected constraints.
  */
@@ -49,13 +49,13 @@ try {
     if (tableNames.includes(required)) {
       console.log(`  ✓ ${required}`);
     } else {
-      console.error(`  ✗ ${required} — MISSING`);
+      console.error(`  ✗ ${required} -- MISSING`);
       allFound = false;
     }
   }
 
   if (!allFound) {
-    console.error('db-check: FAIL — missing required tables.');
+    console.error('db-check: FAIL -- missing required tables.');
     await client.end();
     process.exit(1);
   }
@@ -82,22 +82,22 @@ try {
   const artifactVerifChecks = checkConstraints.filter(c => c.table_name === 'artifact_verifications');
 
   if (videoJobsChecks.length < 2) {
-    console.error('db-check: FAIL — video_jobs missing status/decision CHECK constraints.');
+    console.error('db-check: FAIL -- video_jobs missing status/decision CHECK constraints.');
     await client.end();
     process.exit(1);
   }
 
   if (claimAuditsChecks.length < 3) {
-    console.error('db-check: FAIL — claim_audits missing CHECK constraints.');
+    console.error('db-check: FAIL -- claim_audits missing CHECK constraints.');
     await client.end();
     process.exit(1);
   }
 
-  console.log('\ndb-check: PASS — all 15 tables present with required constraints.');
+  console.log('\ndb-check: PASS -- all 15 tables present with required constraints.');
   await client.end();
   process.exit(0);
 } catch (err) {
-  console.error('db-check: FAIL —', err.message);
+  console.error('db-check: FAIL --', err.message);
   await client.end();
   process.exit(1);
 }

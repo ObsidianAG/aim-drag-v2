@@ -1,0 +1,5 @@
+ALTER TABLE "provider_requests" ADD CONSTRAINT "provider_requests_provider_providers_provider_id_fk" FOREIGN KEY ("provider") REFERENCES "public"."providers"("provider_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "video_jobs" ADD CONSTRAINT "video_jobs_project_id_projects_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("project_id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "artifact_verifications" ADD CONSTRAINT "artifact_verifications_sha256_format_check" CHECK ("artifact_verifications"."artifact_sha256" ~ '^[a-f0-9]{64}$');--> statement-breakpoint
+ALTER TABLE "artifacts" ADD CONSTRAINT "artifacts_sha256_format_check" CHECK ("artifacts"."sha256" ~ '^[a-f0-9]{64}$');--> statement-breakpoint
+ALTER TABLE "provider_requests" ADD CONSTRAINT "provider_requests_status_check" CHECK ("provider_requests"."status" IN ('queued','submitted','running','succeeded','failed','cancelled'));

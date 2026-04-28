@@ -1,5 +1,5 @@
 /**
- * server/db/index.ts — Barrel export for database layer
+ * server/db/index.ts -- Barrel export for database layer
  */
 export * from './schema.js';
 export * from './connection.js';

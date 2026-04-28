@@ -1,5 +1,5 @@
 /**
- * tests/db-persistence.test.ts — Database persistence layer tests
+ * tests/db-persistence.test.ts -- Database persistence layer tests
  *
  * Tests all 6 transaction types, job lifecycle persistence, FK constraints,
  * CHECK constraints, and query helpers.
@@ -60,6 +60,11 @@ async function cleanAll() {
 
 beforeEach(async () => {
   await cleanAll();
+  // Seed required providers for FK constraint
+  await pgClient`INSERT INTO providers (provider_id, name) VALUES ('runway', 'Runway') ON CONFLICT DO NOTHING`;
+  await pgClient`INSERT INTO providers (provider_id, name) VALUES ('test_provider', 'Test Provider') ON CONFLICT DO NOTHING`;
+  await pgClient`INSERT INTO providers (provider_id, name) VALUES ('minimax', 'Minimax') ON CONFLICT DO NOTHING`;
+  await pgClient`INSERT INTO providers (provider_id, name) VALUES ('kling', 'Kling') ON CONFLICT DO NOTHING`;
 });
 
 afterAll(async () => {
@@ -573,7 +578,7 @@ describe('Seed claims for proof', () => {
     expect(allAudits.length).toBeGreaterThanOrEqual(5);
   });
 
-  it('is idempotent — running twice does not duplicate', async () => {
+  it('is idempotent -- running twice does not duplicate', async () => {
     await seedClaimsForProof(db);
     await seedClaimsForProof(db);
 

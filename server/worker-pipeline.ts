@@ -1,5 +1,5 @@
 /**
- * server/worker-pipeline.ts — Async Worker Pipeline for Text2VideoRank
+ * server/worker-pipeline.ts -- Async Worker Pipeline for Text2VideoRank
  *
  * Job processing: queue → plan → submit → poll → download → hash → store → audit → complete
  *

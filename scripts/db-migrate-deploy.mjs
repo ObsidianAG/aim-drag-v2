@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * scripts/db-migrate-deploy.mjs — Production migration deploy
+ * scripts/db-migrate-deploy.mjs -- Production migration deploy
  *
  * Applies all pending Drizzle migrations to the database.
  * Uses drizzle-orm/postgres-js/migrator for forward-only migration.

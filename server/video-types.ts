@@ -1,5 +1,5 @@
 /**
- * server/video-types.ts — Core types and Zod schemas for Text2VideoRank
+ * server/video-types.ts -- Core types and Zod schemas for Text2VideoRank
  *
  * AIM DRAG RULES:
  *   - safeParse everywhere in production paths (never .parse())
@@ -51,7 +51,7 @@ export const RISK_LEVELS = ['low', 'medium', 'high'] as const;
 // ZOD SCHEMAS
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** CreateVideoJobRequest — entry boundary schema, always safeParse */
+/** CreateVideoJobRequest -- entry boundary schema, always safeParse */
 export const CreateVideoJobRequestSchema = z.object({
   prompt: z.string().min(1).max(2000),
   aspectRatio: z.enum(ASPECT_RATIOS),
@@ -74,7 +74,7 @@ export type VideoJobStatus = (typeof VIDEO_JOB_STATUSES)[number];
 /** VideoProvider type */
 export type VideoProvider = (typeof VIDEO_PROVIDERS)[number];
 
-/** VideoJob — full job record */
+/** VideoJob -- full job record */
 export const VideoJobSchema = z.object({
   jobId: z.string().uuid(),
   status: z.enum(VIDEO_JOB_STATUSES),
@@ -94,7 +94,7 @@ export const VideoJobSchema = z.object({
 
 export type VideoJob = z.infer<typeof VideoJobSchema>;
 
-/** ScenePlan — structured shot spec from vLLM planner */
+/** ScenePlan -- structured shot spec from vLLM planner */
 export const ScenePlanSchema = z.object({
   scene_id: z.string().min(1),
   duration_seconds: z.number().int().min(1).max(120),
@@ -110,7 +110,7 @@ export const ScenePlanSchema = z.object({
 
 export type ScenePlan = z.infer<typeof ScenePlanSchema>;
 
-/** SafetyCheck — prompt safety classification */
+/** SafetyCheck -- prompt safety classification */
 export const SafetyCheckSchema = z.object({
   contains_public_figure: z.boolean(),
   contains_private_person: z.boolean(),
@@ -122,7 +122,7 @@ export const SafetyCheckSchema = z.object({
 
 export type SafetyCheck = z.infer<typeof SafetyCheckSchema>;
 
-/** ClaimAudit — evidence record for every claim */
+/** ClaimAudit -- evidence record for every claim */
 export const ClaimAuditSchema = z.object({
   claim_id: z.string().min(1),
   claim_text: z.string().min(1),
@@ -138,7 +138,7 @@ export const ClaimAuditSchema = z.object({
 
 export type ClaimAudit = z.infer<typeof ClaimAuditSchema>;
 
-/** RecommendedProvider — provider selection from planner */
+/** RecommendedProvider -- provider selection from planner */
 export const RecommendedProviderSchema = z.object({
   provider: z.enum(['openai', 'google', 'runway', 'fallback'] as const),
   model: z.string().min(1),
@@ -148,7 +148,7 @@ export const RecommendedProviderSchema = z.object({
 
 export type RecommendedProvider = z.infer<typeof RecommendedProviderSchema>;
 
-/** GenerationParams — video generation parameters */
+/** GenerationParams -- video generation parameters */
 export const GenerationParamsSchema = z.object({
   aspect_ratio: z.enum(ASPECT_RATIOS),
   resolution: z.enum(RESOLUTIONS),
@@ -158,7 +158,7 @@ export const GenerationParamsSchema = z.object({
 
 export type GenerationParams = z.infer<typeof GenerationParamsSchema>;
 
-/** PlannerOutput — full vLLM planner JSON shape */
+/** PlannerOutput -- full vLLM planner JSON shape */
 export const PlannerOutputSchema = z.object({
   decision: z.enum(DECISIONS),
   reason: z.string(),
@@ -173,7 +173,7 @@ export const PlannerOutputSchema = z.object({
 
 export type PlannerOutput = z.infer<typeof PlannerOutputSchema>;
 
-/** EvidenceRecord — proof package for every job */
+/** EvidenceRecord -- proof package for every job */
 export const EvidenceRecordSchema = z.object({
   jobId: z.string().uuid(),
   originalPrompt: z.string(),
@@ -198,7 +198,7 @@ export type EvidenceRecord = z.infer<typeof EvidenceRecordSchema>;
 /**
  * Validate a claim audit entry.
  * No claim is VERIFIED without source_url + source_title + retrieved_at.
- * Uses safeParse — never .parse().
+ * Uses safeParse -- never .parse().
  */
 export function validateClaimAudit(raw: unknown): {
   success: true;

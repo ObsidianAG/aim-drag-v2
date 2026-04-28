@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * scripts/audit-secrets.mjs — Prove no secrets in client code or dist-web
+ * scripts/audit-secrets.mjs -- Prove no secrets in client code or dist-web
  *
  * Scans lib/, dist-web/, and any client-facing code for:
  *   - API keys (OpenAI, Anthropic, Replicate, Google, GitHub)
@@ -66,10 +66,10 @@ for (const dir of dirs) {
 console.log(`audit-secrets: Scanned ${totalScanned} files in [${dirs.join(', ')}]\n`);
 
 if (FINDINGS.length === 0) {
-  console.log('audit-secrets: CLEAN — No secrets found in client code or dist-web.');
+  console.log('audit-secrets: CLEAN -- No secrets found in client code or dist-web.');
   process.exit(0);
 } else {
-  console.error(`audit-secrets: FAIL — ${FINDINGS.length} secret(s) found:\n`);
+  console.error(`audit-secrets: FAIL -- ${FINDINGS.length} secret(s) found:\n`);
   for (const f of FINDINGS) {
     console.error(`  ✗ ${f.file}: ${f.secret}`);
   }

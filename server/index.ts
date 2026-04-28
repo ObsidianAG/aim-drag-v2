@@ -1,5 +1,5 @@
 /**
- * server/index.ts — Custom Node server for text2video-rank
+ * server/index.ts -- Custom Node server for text2video-rank
  *
  * Production entry point. All AI provider calls happen server-side only.
  * No secrets are exposed to the client/dist-web bundle.
@@ -30,11 +30,11 @@ import {
 } from './job-api.js';
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SCHEMA DEFINITIONS — safeParse only in production data paths
+// SCHEMA DEFINITIONS -- safeParse only in production data paths
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * UseCaseSchema — validated with safeParse (never .parse) in production.
+ * UseCaseSchema -- validated with safeParse (never .parse) in production.
  */
 export const UseCaseSchema = z.object({
   id: z.string().uuid(),
@@ -50,7 +50,7 @@ export const UseCaseSchema = z.object({
 export type UseCase = z.infer<typeof UseCaseSchema>;
 
 /**
- * PublicClaimSchema — every public claim MUST have source metadata.
+ * PublicClaimSchema -- every public claim MUST have source metadata.
  */
 export const PublicClaimSchema = z.object({
   claim: z.string().min(1),
@@ -66,7 +66,7 @@ export const PublicClaimSchema = z.object({
 export type PublicClaim = z.infer<typeof PublicClaimSchema>;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// LEGACY REQUEST HANDLERS — safeParse everywhere
+// LEGACY REQUEST HANDLERS -- safeParse everywhere
 // ═══════════════════════════════════════════════════════════════════════════
 
 function handleRank(body: string): { status: number; body: string } {

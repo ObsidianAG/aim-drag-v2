@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * scripts/db-proof.mjs — Database proof runner
+ * scripts/db-proof.mjs -- Database proof runner
  *
  * Runs all database acceptance gates and writes proof logs.
  * Gates: db:generate, db:migrate:deploy, db:check, test:db, test:idempotency, test:sql-injection

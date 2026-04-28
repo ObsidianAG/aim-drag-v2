@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * scripts/audit-claims.mjs — Prove all public claims have source metadata
+ * scripts/audit-claims.mjs -- Prove all public claims have source metadata
  *
  * Scans TypeScript source for PublicClaim objects and verifies they
  * include required source metadata (url, retrievedAt, author).
@@ -98,13 +98,13 @@ if (!schemaHasSourceField) {
 }
 
 if (FINDINGS.length === 0) {
-  console.log('\naudit-claims: CLEAN — All public claims have source metadata enforced.');
+  console.log('\naudit-claims: CLEAN -- All public claims have source metadata enforced.');
   console.log('  PublicClaimSchema requires: source.url, source.retrievedAt, source.author');
   process.exit(0);
 } else {
-  console.error(`\naudit-claims: FAIL — ${FINDINGS.length} issue(s) found:\n`);
+  console.error(`\naudit-claims: FAIL -- ${FINDINGS.length} issue(s) found:\n`);
   for (const f of FINDINGS) {
-    console.error(`  ✗ ${f.file}:${f.line} — ${f.message}`);
+    console.error(`  ✗ ${f.file}:${f.line} -- ${f.message}`);
   }
   process.exit(1);
 }
