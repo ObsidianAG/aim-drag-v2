@@ -8,7 +8,10 @@
  *   - No client-side provider calls (OpenAI, Anthropic, Replicate, etc.)
  *   - No secrets in dist-web
  *   - All public claims carry source metadata
- *   - UseCaseSchema uses safeParse in production data paths
+ *   - safeParse everywhere in production data paths (never .parse())
+ *   - Fail-closed: unknown state → FAIL_CLOSED
+ *   - Every state transition needs CAS guard
+ *   - No video becomes real until: generated, downloaded, hashed, stored, audited, shown with proof
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
@@ -18,6 +21,13 @@ import {
   ReleasePhase,
   ReleaseStage,
 } from '../lib/release-governance/index.js';
+import {
+  handleCreateVideoJob,
+  handleGetVideoJob,
+  handleGetArtifact,
+  extractJobIdFromPath,
+  isArtifactPath,
+} from './job-api.js';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SCHEMA DEFINITIONS — safeParse only in production data paths
@@ -25,8 +35,6 @@ import {
 
 /**
  * UseCaseSchema — validated with safeParse (never .parse) in production.
- * Review requirement: "Replace UseCaseSchema.parse with safeParse in
- * production data paths."
  */
 export const UseCaseSchema = z.object({
   id: z.string().uuid(),
@@ -43,7 +51,6 @@ export type UseCase = z.infer<typeof UseCaseSchema>;
 
 /**
  * PublicClaimSchema — every public claim MUST have source metadata.
- * Review requirement: "No verified public claim without source metadata."
  */
 export const PublicClaimSchema = z.object({
   claim: z.string().min(1),
@@ -59,7 +66,7 @@ export const PublicClaimSchema = z.object({
 export type PublicClaim = z.infer<typeof PublicClaimSchema>;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// REQUEST HANDLERS — safeParse everywhere
+// LEGACY REQUEST HANDLERS — safeParse everywhere
 // ═══════════════════════════════════════════════════════════════════════════
 
 function handleRank(body: string): { status: number; body: string } {
@@ -141,14 +148,33 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   let result: { status: number; body: string };
 
   try {
+    // ─── Health ─────────────────────────────────────────────────────
     if (url === '/health' && method === 'GET') {
       result = handleHealth();
+
+    // ─── Legacy routes ──────────────────────────────────────────────
     } else if (url === '/api/rank' && method === 'POST') {
       const body = await collectBody(req);
       result = handleRank(body);
     } else if (url === '/api/claim' && method === 'POST') {
       const body = await collectBody(req);
       result = handleClaim(body);
+
+    // ─── Video Job API ──────────────────────────────────────────────
+    } else if (url === '/api/video-jobs' && method === 'POST') {
+      const body = await collectBody(req);
+      result = handleCreateVideoJob(body);
+    } else if (url.startsWith('/api/video-jobs/') && method === 'GET') {
+      const jobId = extractJobIdFromPath(url);
+      if (!jobId) {
+        result = { status: 400, body: JSON.stringify({ error: 'INVALID_PATH' }) };
+      } else if (isArtifactPath(url)) {
+        result = handleGetArtifact(jobId);
+      } else {
+        result = handleGetVideoJob(jobId);
+      }
+
+    // ─── 404 ────────────────────────────────────────────────────────
     } else {
       result = { status: 404, body: JSON.stringify({ error: 'NOT_FOUND' }) };
     }
