@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: text2videorank-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: text2videorank
+      POSTGRES_PASSWORD: text2videorank
+      POSTGRES_DB: text2videorank
+    ports:
+      - "5432:5432"
+    volumes:
+      - text2videorank_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U text2videorank -d text2videorank"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  text2videorank_pgdata:

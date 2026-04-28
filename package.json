@@ -16,6 +16,14 @@
     "ast:gate": "node scripts/ast-gate.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node scripts/guard-db-env.mjs && drizzle-kit migrate",
+    "db:migrate:deploy": "node scripts/db-migrate-deploy.mjs",
+    "db:check": "node scripts/db-check.mjs",
+    "test:db": "vitest run tests/db-persistence.test.ts",
+    "test:idempotency": "vitest run tests/db-idempotency.test.ts",
+    "test:sql-injection": "vitest run tests/sql-injection-prevention.test.ts",
+    "proof:db": "node scripts/db-proof.mjs",
+    "proof:claims:db": "node scripts/claim-audit-db-check.mjs",
+    "proof:package:db": "node scripts/proof-package-db-check.mjs",
     "ci": "pnpm install --frozen-lockfile && pnpm typecheck && pnpm typecheck:test && pnpm test && pnpm ast:gate && pnpm build",
     "proof:secrets": "node scripts/audit-secrets.mjs",
     "proof:providers": "node scripts/audit-providers.mjs",
@@ -31,10 +39,14 @@
   "packageManager": "pnpm@10.33.2",
   "dependencies": {
     "cross-env": "^7.0.3",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.9",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
+    "@types/pg": "^8.20.0",
+    "drizzle-kit": "^0.31.10",
     "esbuild": "^0.25.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.5"

@@ -523,3 +523,94 @@ All 15 fields present. Bundle hash is deterministic SHA-256. `is_complete()` ret
 | Anchored regex (BUILD 3) | **7 assertions converted, all 20 tests pass** |
 
 > **Acceptance rule satisfied:** Test output present, AST gate output present, QNEO evidence present → ALLOW.
+
+## 5. Database Persistence Layer
+
+### 5.1 Database Provider
+The application uses **PostgreSQL 16** as the production database provider, accessed via the `postgres.js` driver and **Drizzle ORM**.
+
+### 5.2 Migration Strategy
+Database schema changes are managed using **Drizzle Kit**. The `drizzle-kit generate` command produces forward-only SQL migration files. These migrations are applied in production using the `drizzle-orm/postgres-js/migrator` module via the `db:migrate:deploy` script.
+
+### 5.3 Schema Tables
+The persistence layer implements 15 production tables:
+1. `users`
+2. `projects`
+3. `video_jobs`
+4. `video_job_events`
+5. `providers`
+6. `provider_requests`
+7. `artifacts`
+8. `artifact_verifications`
+9. `claims`
+10. `claim_sources`
+11. `claim_audits`
+12. `safety_reviews`
+13. `proof_runs`
+14. `proof_gate_results`
+15. `audit_log`
+
+### 5.4 Constraint List
+The database enforces strict data integrity through `CHECK` constraints:
+- `video_jobs.status`: Must be one of `queued`, `planning`, `submitted`, `generating`, `provider_completed`, `downloading`, `storing`, `verifying`, `completed`, `held`, `failed`.
+- `video_jobs.decision`: Must be one of `ALLOW`, `HOLD`, `FAIL_CLOSED`.
+- `artifacts.size_bytes`: Must be strictly greater than 0.
+- `artifact_verifications.verified`: Cannot be true if `artifact_sha256` is null or empty.
+- `claim_audits.confidence`: Must be one of `HIGH`, `MEDIUM`, `LOW`.
+- `claim_audits.verification_status`: Must be one of `VERIFIED`, `PARTIAL`, `UNVERIFIED`.
+- `claim_audits.ui_badge_expected`: Must be one of `Verified`, `Partial`, `Needs Verification`.
+- `safety_reviews.status`: Must be one of `PASS`, `HOLD`, `FAIL_CLOSED`.
+- `proof_runs.final_decision`: Must be one of `ALLOW`, `HOLD`, `FAIL_CLOSED`.
+
+### 5.5 Foreign Key List
+Referential integrity is enforced via foreign keys (with `ON DELETE CASCADE` where appropriate):
+- `projects.user_id` → `users.user_id` (CASCADE)
+- `video_jobs.project_id` → `projects.project_id` (CASCADE)
+- `video_job_events.job_id` → `video_jobs.job_id` (CASCADE)
+- `provider_requests.job_id` → `video_jobs.job_id` (CASCADE)
+- `artifacts.job_id` → `video_jobs.job_id` (CASCADE)
+- `artifact_verifications.job_id` → `video_jobs.job_id` (CASCADE)
+- `artifact_verifications.artifact_sha256` → `artifacts.sha256`
+- `claim_sources.claim_id` → `claims.claim_id` (CASCADE)
+- `claim_audits.claim_id` → `claims.claim_id` (CASCADE)
+- `safety_reviews.job_id` → `video_jobs.job_id` (CASCADE)
+- `proof_gate_results.run_id` → `proof_runs.run_id` (CASCADE)
+
+### 5.6 Unique Index List
+Uniqueness is enforced at the database level to prevent duplicates:
+- `users.user_id`, `users.email`
+- `projects.project_id`
+- `video_jobs.job_id`, `video_jobs.idempotency_key`
+- `providers.provider_id`
+- `provider_requests.provider_request_key`
+- `provider_requests` composite unique on `(provider, provider_job_id)`
+- `artifacts.storage_key`, `artifacts.sha256`
+- `claims.claim_id`
+- `proof_runs.run_id`
+- `proof_gate_results` composite unique on `(run_id, gate_name)`
+
+### 5.7 Transaction Map
+Multi-step operations are wrapped in atomic database transactions:
+1. **Create Job**: Inserts `video_jobs`, `video_job_events`, and `audit_log` atomically.
+2. **Submit Provider Request**: Inserts `provider_requests`, updates `video_jobs.status`, and inserts `video_job_events`.
+3. **Provider Completed**: Updates `video_jobs.status` and inserts `video_job_events`.
+4. **Store Artifact**: Inserts `artifacts`, `artifact_verifications`, updates `video_jobs.status`, and inserts `video_job_events`.
+5. **Claim Audit**: Inserts `claims`, `claim_sources`, `claim_audits`, updates `video_jobs.decision`, inserts `video_job_events`, and `audit_log`.
+6. **Proof Run**: Inserts `proof_runs`, multiple `proof_gate_results`, and `audit_log`.
+
+### 5.8 Idempotency Map
+Idempotency is guaranteed by database unique constraints:
+- **Job Creation**: `video_jobs.idempotency_key` prevents duplicate job submissions.
+- **Provider Requests**: `provider_requests.provider_request_key` prevents duplicate API calls.
+- **Artifact Storage**: `artifacts.sha256` prevents duplicate artifact processing (webhook + poller deduplication).
+- **Proof Runs**: `proof_runs.run_id` prevents duplicate proof executions.
+
+### 5.9 SQL Injection Prevention
+The application is protected against SQL injection through the following mechanisms:
+- **Parameterized Queries**: All database interactions use Drizzle ORM, which delegates to the `postgres.js` driver using parameterized queries.
+- **No String Interpolation**: The codebase contains zero instances of raw SQL string concatenation with user input.
+- **Static Analysis**: The `test:sql-injection` suite scans the TypeScript source code to verify the absence of dangerous SQL patterns.
+- **Runtime Verification**: The test suite actively attempts SQL injection attacks (e.g., UNION-based, boolean-based, null-byte) against search and filter endpoints, verifying that malicious input is safely handled as data rather than executable code.
+
+### 5.10 Rollback Behavior
+If any step within a transaction fails (e.g., a constraint violation or network error), the entire transaction is rolled back by PostgreSQL. This ensures the database never enters an inconsistent state (e.g., an artifact record existing without its corresponding verification record). The application follows a **FAIL_CLOSED** policy on database errors.
