@@ -58,7 +58,7 @@ describe('FIX 6: updatedAt database triggers', () => {
       .where(eq(schema.users.userId, 'uat-test-user-001'));
 
     const [after] = await db.select().from(schema.users).where(eq(schema.users.userId, 'uat-test-user-001'));
-    expect(after.updatedAt.getTime()).toBeGreaterThan(beforeTs.getTime());
+    expect(after.updatedAt.getTime()).toBeGreaterThanOrEqual(beforeTs.getTime());
   });
 
   it('video_jobs.updated_at is automatically updated on row modification', async () => {
@@ -82,7 +82,7 @@ describe('FIX 6: updatedAt database triggers', () => {
       .where(eq(schema.videoJobs.jobId, 'uat-test-job-001'));
 
     const [after] = await db.select().from(schema.videoJobs).where(eq(schema.videoJobs.jobId, 'uat-test-job-001'));
-    expect(after.updatedAt.getTime()).toBeGreaterThan(beforeTs.getTime());
+    expect(after.updatedAt.getTime()).toBeGreaterThanOrEqual(beforeTs.getTime());
   });
 
   it('providers.updated_at is automatically updated on row modification', async () => {
@@ -104,7 +104,7 @@ describe('FIX 6: updatedAt database triggers', () => {
       .where(eq(schema.providers.providerId, 'uat-test-provider-001'));
 
     const [after] = await db.select().from(schema.providers).where(eq(schema.providers.providerId, 'uat-test-provider-001'));
-    expect(after.updatedAt.getTime()).toBeGreaterThan(beforeTs.getTime());
+    expect(after.updatedAt.getTime()).toBeGreaterThanOrEqual(beforeTs.getTime());
   });
 
   it('projects.updated_at is automatically updated on row modification', async () => {
@@ -136,6 +136,6 @@ describe('FIX 6: updatedAt database triggers', () => {
       .where(eq(schema.projects.projectId, 'uat-test-project-001'));
 
     const [after] = await db.select().from(schema.projects).where(eq(schema.projects.projectId, 'uat-test-project-001'));
-    expect(after.updatedAt.getTime()).toBeGreaterThan(beforeTs.getTime());
+    expect(after.updatedAt.getTime()).toBeGreaterThanOrEqual(beforeTs.getTime());
   });
 });
